@@ -3,9 +3,9 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "syfter-enterprise"
-version = "1.0.0"
-description = "Enterprise SBOM platform for RPM and container image scanning at scale"
+name = "syfter"
+version = "0.9.1.0"
+description = "SBOM generation and management tool using Syft"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "Apache-2.0"}
@@ -55,8 +55,8 @@ syfter = "syfter.cli:main"
 syfter-server = "server.main:run_server"
 
 [project.urls]
-Homepage = "https://github.com/north-echo/syfter-enterprise"
-Repository = "https://github.com/north-echo/syfter-enterprise"
+Homepage = "https://github.com/vdanen/syfter"
+Repository = "https://github.com/vdanen/syfter"
 
 [tool.setuptools.packages.find]
 where = ["."]

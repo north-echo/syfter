@@ -1116,39 +1116,7 @@ wheels = [
 
 [[package]]
 name = "syfter"
-version = "0.9.0.1"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "click" },
-    { name = "httpx" },
-    { name = "packageurl-python" },
-    { name = "pyyaml" },
-    { name = "rich" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/95/09/cbba9879bceb7339db360c10f1cea7b1bfcaa9c50f8e1da7498cb7da0ef6/syfter-0.9.0.1.tar.gz", hash = "sha256:3e49d5e76efbb959ff97d897d516a0bcbc3b83fe39fbf936493d1b9d44d984b1", size = 92081, upload-time = "2026-01-24T16:29:50.699Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/0e/f8/31bfece31ddf39a6e075e9424a389d6298253afe4da933f3f5db725e735f/syfter-0.9.0.1-py3-none-any.whl", hash = "sha256:1031be3cd279b43a41796fb7febbe7e0d97555ae2036065425378157be5d4568", size = 87599, upload-time = "2026-01-24T16:28:42.021Z" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "black" },
-    { name = "pytest" },
-    { name = "pytest-cov" },
-    { name = "ruff" },
-]
-server = [
-    { name = "boto3" },
-    { name = "fastapi" },
-    { name = "psycopg2-binary" },
-    { name = "python-multipart" },
-    { name = "sqlalchemy" },
-    { name = "uvicorn", extra = ["standard"] },
-]
-
-[[package]]
-name = "syfter-enterprise"
-version = "1.0.0"
+version = "0.9.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "click" },
@@ -1160,7 +1128,17 @@ dependencies = [
 
 [package.optional-dependencies]
 all = [
-    { name = "syfter", extra = ["dev", "server"] },
+    { name = "alembic" },
+    { name = "black" },
+    { name = "boto3" },
+    { name = "fastapi" },
+    { name = "psycopg2-binary" },
+    { name = "pytest" },
+    { name = "pytest-cov" },
+    { name = "python-multipart" },
+    { name = "ruff" },
+    { name = "sqlalchemy" },
+    { name = "uvicorn", extra = ["standard"] },
 ]
 dev = [
     { name = "black" },

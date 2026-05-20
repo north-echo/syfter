@@ -188,7 +188,7 @@ pip install "syfter[server]"
 pip install "syfter-0.9.0-py3-none-any.whl[server]"
 
 # Or from source
-git clone https://github.com/redhat/syfter.git
+git clone https://github.com/vdanen/syfter.git
 cd syfter
 pip install -e ".[server]"
 ```

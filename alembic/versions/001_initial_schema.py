@@ -1,10 +1,10 @@
-"""Initial schema — baseline for syfter-enterprise 1.0.0
+"""Initial schema — baseline for syfter 0.9.1.0
 
 Revision ID: 001
 Revises: None
 Create Date: 2026-04-01
 
-This migration represents the full schema as of syfter-enterprise 1.0.0.
+This migration represents the full schema as of syfter 0.9.1.0.
 Tables: products, systems, scans, image_layers, packages, files, api_keys.
 
 For existing databases: stamp with `alembic stamp 001` to mark as current

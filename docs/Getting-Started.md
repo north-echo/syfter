@@ -11,30 +11,30 @@ Syfter is an SBOM (Software Bill of Materials) server that catalogs RPM packages
 
 ## 1. Install the CLI
 
-Install the CLI from the syfter-enterprise repository. This includes built-in API key authentication support.
+Install the CLI from the [syfter](https://github.com/vdanen/syfter) repository. This includes built-in API key authentication support.
 
 ### macOS
 
 ```bash
-uv tool install git+https://github.com/north-echo/syfter-enterprise
+uv tool install git+https://github.com/vdanen/syfter
 ```
 
 Or with pip:
 
 ```bash
-pip install git+https://github.com/north-echo/syfter-enterprise
+pip install git+https://github.com/vdanen/syfter
 ```
 
 ### Linux
 
 ```bash
-pip install git+https://github.com/north-echo/syfter-enterprise
+pip install git+https://github.com/vdanen/syfter
 ```
 
 If you hit PEP 668 restrictions on your distro, use `pipx` or a virtual environment:
 
 ```bash
-pipx install git+https://github.com/north-echo/syfter-enterprise
+pipx install git+https://github.com/vdanen/syfter
 ```
 
 ### Verify
@@ -43,7 +43,7 @@ pipx install git+https://github.com/north-echo/syfter-enterprise
 syfter --version
 ```
 
-> **Note:** If you previously installed the upstream `syfter` package from `vdanen/syfter` or PyPI, uninstall it first (`uv tool uninstall syfter` or `pip uninstall syfter`). The upstream CLI does not send API key headers and will return `401` errors.
+> **Note:** If you have an older `syfter` install from PyPI without API key support, uninstall it first (`uv tool uninstall syfter` or `pip uninstall syfter`) and reinstall from the repository above.
 
 ## 2. Configure Environment Variables
 
@@ -214,12 +214,12 @@ Two possible causes:
    ```
    If empty, re-run the export commands from step 2 and reload your shell.
 
-2. **Wrong syfter version installed.** The upstream CLI from PyPI (`pip install syfter`) does not support API key auth. You must install from `north-echo/syfter-enterprise` as described in step 1. Check which version you have:
+2. **Wrong syfter version installed.** Install from [github.com/vdanen/syfter](https://github.com/vdanen/syfter) as described in step 1 to get API key support. Check which version you have:
    ```bash
    which syfter
    syfter --version
    ```
-   If the version is `0.9.x`, you have the upstream package. Uninstall it and reinstall from step 1.
+   If the version is older than `0.9.1.0`, uninstall and reinstall from step 1.
 
 ### Connection refused / host unreachable
 
