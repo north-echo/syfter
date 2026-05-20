@@ -470,6 +470,7 @@ class Storage:
     def search_packages(
         self,
         name_pattern: Optional[str] = None,
+        pkg_version: Optional[str] = None,
         product_name: Optional[str] = None,
         product_version: Optional[str] = None,
         limit: int = 100,
@@ -479,6 +480,7 @@ class Storage:
 
         Args:
             name_pattern: SQL LIKE pattern for package name (use % as wildcard)
+            pkg_version: SQL LIKE pattern for package version (use % as wildcard)
             product_name: Filter by product name
             product_version: Filter by product version
             limit: Maximum results to return
@@ -500,6 +502,10 @@ class Storage:
             if name_pattern:
                 query += " AND pkg.name LIKE ?"
                 params.append(name_pattern)
+
+            if pkg_version:
+                query += " AND pkg.version LIKE ?"
+                params.append(pkg_version)
 
             if product_name:
                 query += " AND p.name = ?"
@@ -580,10 +586,14 @@ class Storage:
         """
         with self._get_connection() as conn:
             cursor = conn.cursor()
+            # Use a subquery to get the source_type from the most recent scan
             cursor.execute("""
                 SELECT p.*, COUNT(DISTINCT s.id) as scan_count,
                        SUM(s.package_count) as total_packages,
-                       SUM(s.file_count) as total_files
+                       SUM(s.file_count) as total_files,
+                       (SELECT source_type FROM scans 
+                        WHERE product_id = p.id 
+                        ORDER BY scan_timestamp DESC LIMIT 1) as source_type
                 FROM products p
                 LEFT JOIN scans s ON p.id = s.product_id
                 GROUP BY p.id
@@ -637,6 +647,40 @@ class Storage:
             cursor.execute("DELETE FROM scans WHERE id = ?", (scan_id,))
             conn.commit()
             return cursor.rowcount > 0
+
+    def delete_product(self, product_name: str, product_version: str) -> bool:
+        """
+        Delete a product and all its associated scans, packages, and files.
+
+        Args:
+            product_name: Product name
+            product_version: Product version
+
+        Returns:
+            bool: True if deleted, False if not found
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+
+            # Find the product
+            cursor.execute(
+                "SELECT id FROM products WHERE name = ? AND version = ?",
+                (product_name, product_version)
+            )
+            row = cursor.fetchone()
+            if not row:
+                return False
+
+            product_id = row["id"]
+
+            # Delete in order: files -> packages -> scans -> product
+            # (due to foreign key constraints)
+            cursor.execute("DELETE FROM files WHERE product_id = ?", (product_id,))
+            cursor.execute("DELETE FROM packages WHERE product_id = ?", (product_id,))
+            cursor.execute("DELETE FROM scans WHERE product_id = ?", (product_id,))
+            cursor.execute("DELETE FROM products WHERE id = ?", (product_id,))
+            conn.commit()
+            return True
 
     def get_stats(self) -> dict:
         """

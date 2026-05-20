@@ -1,0 +1,31 @@
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: syfter-api
+  namespace: syfter
+  labels:
+    app: syfter-api
+spec:
+  source:
+    type: Git
+    git:
+      uri: https://github.com/vdanen/syfter
+      ref: main
+    contextDir: .
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: podman/Containerfile
+  output:
+    to:
+      kind: ImageStreamTag
+      name: syfter-api:latest
+  triggers:
+    - type: ConfigChange
+  resources:
+    requests:
+      memory: "2Gi"
+      cpu: "1"
+    limits:
+      memory: "4Gi"
+      cpu: "2"

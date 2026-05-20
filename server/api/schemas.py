@@ -68,6 +68,7 @@ class ProductResponse(BaseModel):
     scan_count: int = 0
     total_packages: int = 0
     total_files: int = 0
+    source_type: Optional[str] = None  # Type of scan: directory, container, archive, etc.
 
     class Config:
         from_attributes = True
@@ -239,92 +240,70 @@ class StatsResponse(BaseModel):
     scans: int
     packages: int
     files: int
+    dependencies: int = 0
+    component_relationships: int = 0
     storage_type: str
     database_type: str
 
 
-# Job schemas
-class JobCreate(BaseModel):
-    """Schema for creating a product import job."""
+# Dependency schemas
+class DependencyResponse(BaseModel):
+    """Schema for dependency search response."""
 
-    product_name: str = Field(..., description="Product name")
-    product_version: str = Field(..., description="Product version")
-    source_path: str = Field(..., description="Source path that was scanned")
-    source_type: str = Field(default="directory", description="Type of source")
-    syft_version: Optional[str] = Field(default=None, description="Syft version used")
-    total_packages: int = Field(default=0, description="Total package count")
-    total_files: int = Field(default=0, description="Total file count")
-    image_layers_json: Optional[str] = Field(default=None, description="Container layer chain (JSON string)")
-
-
-class SystemJobCreate(BaseModel):
-    """Schema for creating a system import job."""
-
-    hostname: str = Field(..., description="System hostname")
-    ip_address: Optional[str] = Field(default=None, description="IP address")
-    os_name: Optional[str] = Field(default=None, description="OS name")
-    os_version: Optional[str] = Field(default=None, description="OS version")
-    architecture: Optional[str] = Field(default=None, description="Architecture")
-    tag: Optional[str] = Field(default=None, description="Tag for grouping/CMDB linking")
-    syft_version: Optional[str] = Field(default=None, description="Syft version used")
-    total_packages: int = Field(default=0, description="Total package count")
-    total_files: int = Field(default=0, description="Total file count")
-
-
-class JobUploadUrls(BaseModel):
-    """Response with presigned URLs for job file uploads."""
-
-    job_id: str
-    original_sbom_url: str
-    modified_sbom_url: str
-    packages_tsv_url: str
-    files_tsv_url: str
-    expires_in: int = 3600
-
-
-class JobResponse(BaseModel):
-    """Schema for job status response."""
-
-    id: str
-    status: str  # pending, uploading, processing, complete, failed
-    job_type: str  # product_import, system_import
-    # Product fields (may be None for system imports)
-    product_name: Optional[str] = None
-    product_version: Optional[str] = None
-    # System fields (may be None for product imports)
-    system_hostname: Optional[str] = None
-    system_ip: Optional[str] = None
-    system_tag: Optional[str] = None
-    scan_label: Optional[str] = None
-    # Common fields
-    source_path: str
-    source_type: str
-    syft_version: Optional[str]
-    total_packages: int
-    total_files: int
-    processed_packages: int
-    processed_files: int
-    error_message: Optional[str]
-    scan_id: Optional[int]
-    created_at: datetime
-    started_at: Optional[datetime]
-    completed_at: Optional[datetime]
+    id: int
+    package_id: Optional[int]
+    package_name: Optional[str] = None
+    package_version: Optional[str] = None
+    package_arch: Optional[str] = None
+    dependency_name: str
+    dependency_version: Optional[str]
+    dependency_flags: Optional[str]
+    dependency_type: str
+    product_name: str
+    product_version: str
 
     class Config:
         from_attributes = True
 
 
-class JobListResponse(BaseModel):
-    """Schema for job list response."""
+# Component relationship schemas
+class ComponentRelationshipCreate(BaseModel):
+    """Schema for creating a component relationship."""
 
-    jobs: List[JobResponse]
-    total: int
+    parent_product_name: str = Field(..., description="Parent/layered product name")
+    parent_product_version: str = Field(..., description="Parent product version")
+    component_product_name: str = Field(..., description="Component product name")
+    component_product_version: str = Field(..., description="Component product version")
+    relationship_type: str = Field(
+        default="layered",
+        description="'layered' (included without modification) or 'maintained' (Red Hat owns maintenance)",
+    )
 
 
-class JobStartRequest(BaseModel):
-    """Request to start processing an uploaded job."""
+class ComponentRelationshipResponse(BaseModel):
+    """Schema for component relationship response."""
 
-    pass  # No additional fields needed, job_id is in URL
+    id: int
+    parent_product_name: str
+    parent_product_version: str
+    component_product_name: str
+    component_product_version: str
+    relationship_type: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class RemoteScanCreate(BaseModel):
+    """Schema for creating a server-side remote scan job."""
+
+    url: str = Field(..., description="HTTP/HTTPS URL to an RPM repository directory")
+    product_name: str = Field(..., description="Product name (e.g., 'rhel')")
+    product_version: str = Field(..., description="Product version (e.g., '10.1')")
+    description: str = Field(default="", description="Product description")
+    skip_files: bool = Field(default=True, description="Skip file indexing (recommended for large repos)")
+    exclude_debug: bool = Field(default=True, description="Exclude debuginfo/debugsource packages")
 
 
 # Update forward references

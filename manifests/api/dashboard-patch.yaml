@@ -1,0 +1,179 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: syfter-dashboard-patch
+  namespace: syfter
+data:
+  index.html: |
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>Syfter Enterprise</title>
+      <link rel="stylesheet" href="css/style.css">
+    </head>
+    <body>
+      <nav class="sidebar">
+        <div class="sidebar-header">
+          <h1>Syfter</h1>
+          <span class="badge">Enterprise</span>
+        </div>
+        <ul class="nav-links">
+          <li><a href="#/" data-route="/">Overview</a></li>
+          <li><a href="#/products" data-route="/products">Products</a></li>
+          <li><a href="#/packages" data-route="/packages">Packages</a></li>
+          <li><a href="#/systems" data-route="/systems">Systems</a></li>
+        </ul>
+      </nav>
+      <main class="content">
+        <div id="app">
+          <div class="loading-spinner"></div>
+        </div>
+      </main>
+      <script src="js/api.js"></script>
+      <script src="js/app.js"></script>
+      <script src="js/views/stats.js"></script>
+      <script src="js/views/products.js"></script>
+      <script src="js/views/product-detail.js"></script>
+      <script src="js/views/packages.js"></script>
+      <script src="js/views/systems.js"></script>
+    </body>
+    </html>
+  api.js: |
+    /**
+     * API client for Syfter Enterprise dashboard.
+     *
+     * Auth: Uses X-Forwarded-User (via oauth2-proxy) when available,
+     * otherwise prompts for an API key and stores it in localStorage.
+     */
+
+    const API = {
+      _keyStorageKey: "syfter_api_key",
+
+      /** Get the stored API key, or null. */
+      getKey() {
+        return localStorage.getItem(this._keyStorageKey);
+      },
+
+      /** Store an API key. */
+      setKey(key) {
+        localStorage.setItem(this._keyStorageKey, key);
+      },
+
+      /** Clear the stored API key. */
+      clearKey() {
+        localStorage.removeItem(this._keyStorageKey);
+      },
+
+      /** Show the API key login screen. */
+      showLogin(message) {
+        const app = document.getElementById("app");
+        app.innerHTML = `
+          <div style="max-width:400px;margin:80px auto;text-align:center">
+            <h2 style="margin-bottom:8px">Syfter Enterprise</h2>
+            <p style="color:var(--gray-400);font-size:14px;margin-bottom:24px">Enter your API key to continue</p>
+            ${message ? `<div class="error-msg" style="margin-bottom:16px">${message}</div>` : ""}
+            <div style="display:flex;gap:8px">
+              <input type="password" id="api-key-input" placeholder="API key"
+                     style="flex:1;min-width:0;font-family:var(--font-mono);font-size:13px">
+              <button id="api-key-submit" class="btn-primary">Connect</button>
+            </div>
+          </div>`;
+
+        const input = document.getElementById("api-key-input");
+        const submit = document.getElementById("api-key-submit");
+
+        const doLogin = () => {
+          const key = input.value.trim();
+          if (!key) return;
+          this.setKey(key);
+          window.dispatchEvent(new HashChangeEvent("hashchange"));
+        };
+
+        submit.addEventListener("click", doLogin);
+        input.addEventListener("keydown", e => { if (e.key === "Enter") doLogin(); });
+        input.focus();
+      },
+
+      /**
+       * Fetch JSON from the API.
+       * Uses redirect: "manual" so that oauth2-proxy 302 redirects (session
+       * expiry) are caught and handled as a full-page reload rather than
+       * silently failing as opaque responses.
+       */
+      async request(path, params) {
+        const url = new URL(path, window.location.origin);
+        if (params) {
+          for (const [k, v] of Object.entries(params)) {
+            if (v !== null && v !== undefined && v !== "") {
+              url.searchParams.set(k, v);
+            }
+          }
+        }
+
+        const headers = {};
+        const key = this.getKey();
+        if (key) {
+          headers["X-API-Key"] = key;
+        }
+
+        const resp = await fetch(url.toString(), { headers, redirect: "manual" });
+
+        // oauth2-proxy session expired — redirect to trigger Keycloak re-login
+        if (resp.type === "opaqueredirect" || resp.status === 302) {
+          window.location.reload();
+          throw new Error("__auth__");
+        }
+
+        // API key invalid or missing
+        if (resp.status === 401 || resp.status === 403) {
+          this.clearKey();
+          let hint = "Invalid or missing API key";
+          try {
+            const body = await resp.json();
+            hint = body.error || body.detail || hint;
+          } catch (_) {}
+          this.showLogin(hint);
+          throw new Error("__auth__");
+        }
+
+        if (!resp.ok) {
+          let detail = `HTTP ${resp.status}`;
+          try {
+            const body = await resp.json();
+            detail = body.detail || body.error || detail;
+          } catch (_) {}
+          throw new Error(detail);
+        }
+        return resp.json();
+      },
+
+      /** Get database statistics. */
+      stats() { return this.request("/api/v1/query/stats"); },
+
+      /** List products with pagination. */
+      products(limit = 50, offset = 0) {
+        return this.request("/api/v1/products/", { limit, offset });
+      },
+
+      /** Get a single product. */
+      product(name, version) {
+        return this.request(`/api/v1/products/${encodeURIComponent(name)}/${encodeURIComponent(version)}`);
+      },
+
+      /** List packages for a product. */
+      productPackages(name, version, limit = 100, offset = 0) {
+        return this.request(`/api/v1/query/list/packages/${encodeURIComponent(name)}/${encodeURIComponent(version)}`, { limit, offset });
+      },
+
+      /** Search packages globally. */
+      searchPackages(params) {
+        return this.request("/api/v1/query/packages", params);
+      },
+
+      /** List systems with pagination. */
+      systems(limit = 50, offset = 0) {
+        return this.request("/api/v1/systems/", { limit, offset });
+      },
+    };

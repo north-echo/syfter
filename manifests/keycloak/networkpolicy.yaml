@@ -1,0 +1,28 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: keycloak
+  namespace: syfter
+spec:
+  podSelector:
+    matchLabels:
+      app: keycloak
+  policyTypes:
+    - Ingress
+  ingress:
+    # Allow from OpenShift router (for Route)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              network.openshift.io/policy-group: ingress
+      ports:
+        - port: 8080
+          protocol: TCP
+    # Allow from syfter-api pods (OAuth proxy callback)
+    - from:
+        - podSelector:
+            matchLabels:
+              app: syfter-api
+      ports:
+        - port: 8080
+          protocol: TCP

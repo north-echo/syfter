@@ -1,0 +1,17 @@
+kind: Client
+apiVersion: "sso.redhat.com/v1"
+metadata:
+  name: "Syfter SBOM Platform"
+  contact:
+    - "__CONTACT_EMAIL__"
+  type: Confidential Web Application
+  environment: sso.redhat.com
+spec:
+  protocol: openid-connect
+  confidential: true
+  grants:
+    - name: authorization_code
+      pkce: true
+      redirectUris:
+        - https://keycloak-syfter.__CLUSTER_DOMAIN__/realms/syfter/broker/redhat-sso/endpoint
+  scopes: []

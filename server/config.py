@@ -114,6 +114,20 @@ class ServerConfig:
     workers: int = 4
     # Skip file indexing for scans with more than this many files (0 = never skip)
     skip_file_index_threshold: int = 100000
+    # Authentication
+    auth_enabled: bool = True
+    admin_api_key: Optional[str] = None
+    auth_cache_ttl: int = 60
+    # Rate limiting (per API key)
+    rate_limit_enabled: bool = True
+    rate_limit_query: int = 60         # requests per minute (all API endpoints)
+    rate_limit_query_burst: int = 20
+    rate_limit_upload: int = 10        # requests per minute (scan upload)
+    rate_limit_upload_burst: int = 5
+    # Response caching
+    cache_enabled: bool = True
+    cache_stats_ttl: int = 300         # seconds (5 minutes)
+    cache_products_ttl: int = 300      # seconds (5 minutes)
 
     database: DatabaseConfig = field(default_factory=DatabaseConfig.from_env)
     storage: StorageConfig = field(default_factory=StorageConfig.from_env)
@@ -127,6 +141,17 @@ class ServerConfig:
             debug=os.getenv("SYFTER_DEBUG", "false").lower() == "true",
             workers=int(os.getenv("SYFTER_WORKERS", "4")),
             skip_file_index_threshold=int(os.getenv("SYFTER_SKIP_FILE_INDEX_THRESHOLD", "100000")),
+            auth_enabled=os.getenv("SYFTER_AUTH_ENABLED", "true").lower() == "true",
+            admin_api_key=os.getenv("SYFTER_ADMIN_API_KEY"),
+            auth_cache_ttl=int(os.getenv("SYFTER_AUTH_CACHE_TTL", "60")),
+            rate_limit_enabled=os.getenv("SYFTER_RATE_LIMIT_ENABLED", "true").lower() == "true",
+            rate_limit_query=int(os.getenv("SYFTER_RATE_LIMIT_QUERY", "60")),
+            rate_limit_query_burst=int(os.getenv("SYFTER_RATE_LIMIT_QUERY_BURST", "20")),
+            rate_limit_upload=int(os.getenv("SYFTER_RATE_LIMIT_UPLOAD", "10")),
+            rate_limit_upload_burst=int(os.getenv("SYFTER_RATE_LIMIT_UPLOAD_BURST", "5")),
+            cache_enabled=os.getenv("SYFTER_CACHE_ENABLED", "true").lower() == "true",
+            cache_stats_ttl=int(os.getenv("SYFTER_CACHE_STATS_TTL", "300")),
+            cache_products_ttl=int(os.getenv("SYFTER_CACHE_PRODUCTS_TTL", "300")),
             database=DatabaseConfig.from_env(),
             storage=StorageConfig.from_env(),
         )

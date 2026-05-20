@@ -13,8 +13,9 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.orm import Session
 
 from ..config import get_config
-from ..db import get_db, Product, Scan, Package, File as FileModel
+from ..db import get_db, Product, Scan, Package, File as FileModel, ImageLayer, Attestation
 from ..storage import get_storage
+from .queries import invalidate_stats_cache
 from .schemas import (
     ScanResponse,
     ScanMetadata,
@@ -162,6 +163,9 @@ async def upload_scan(
     original_sbom: UploadFile = File(..., description="Original syft-json SBOM (gzip compressed)"),
     modified_sbom: UploadFile = File(..., description="Modified syft-json SBOM (gzip compressed)"),
     packages_json: UploadFile = File(..., description="Package index JSON (gzip compressed)"),
+    dependencies_json: Optional[UploadFile] = File(None, description="Dependency index JSON (gzip compressed)"),
+    image_layers_json: Optional[UploadFile] = File(None, description="Container layer chain JSON (gzip compressed)"),
+    attestation_json: Optional[UploadFile] = File(None, description="Cosign attestation data JSON (gzip compressed)"),
     db: Session = Depends(get_db),
 ):
     """
@@ -202,12 +206,17 @@ async def upload_scan(
         logger.info(f"Deleting existing scan {existing_scan.id}")
         delete_start = time.time()
 
-        # Delete old SBOM files from storage
+        # Delete old SBOM and attestation files from storage
         try:
             storage.delete(existing_scan.original_sbom_key)
             storage.delete(existing_scan.modified_sbom_key)
         except Exception:
-            pass  # Ignore storage errors
+            pass
+        for att in db.query(Attestation).filter(Attestation.scan_id == existing_scan.id).all():
+            try:
+                storage.delete(att.attestation_key)
+            except Exception:
+                pass
 
         # Use raw SQL for fast deletion (ORM is extremely slow for millions of rows)
         connection = db.connection()
@@ -218,8 +227,11 @@ async def upload_scan(
         is_postgres = 'psycopg' in type(raw_conn).__module__ or 'postgresql' in str(db.bind.url)
         param = '%s' if is_postgres else '?'
 
-        # Delete files first (foreign key), then packages, then scan
-        # Commit after each to release locks and let PostgreSQL reclaim space
+        # Delete in FK order: dependencies -> files -> packages -> layers/attestations -> scan
+        logger.info("Deleting dependencies...")
+        cursor.execute(f"DELETE FROM dependencies WHERE scan_id = {param}", (existing_scan.id,))
+        raw_conn.commit()
+
         logger.info("Deleting files...")
         cursor.execute(f"DELETE FROM files WHERE scan_id = {param}", (existing_scan.id,))
         raw_conn.commit()
@@ -231,6 +243,10 @@ async def upload_scan(
         cursor.execute(f"DELETE FROM packages WHERE scan_id = {param}", (existing_scan.id,))
         raw_conn.commit()
         logger.info(f"Packages deleted in {time.time() - pkg_start:.1f}s")
+
+        cursor.execute(f"DELETE FROM image_layers WHERE scan_id = {param}", (existing_scan.id,))
+        cursor.execute(f"DELETE FROM attestations WHERE scan_id = {param}", (existing_scan.id,))
+        raw_conn.commit()
 
         logger.info("Deleting scan record...")
         cursor.execute(f"DELETE FROM scans WHERE id = {param}", (existing_scan.id,))
@@ -248,16 +264,16 @@ async def upload_scan(
     packages_data = await packages_json.read()
     logger.info(f"Files read: original={len(original_data)/1024/1024:.1f}MB, modified={len(modified_data)/1024/1024:.1f}MB, packages={len(packages_data)/1024:.1f}KB")
 
-    # Validate SBOM files are proper gzip JSON (quick validation, not full parsing)
-    # We validate the compressed data can be decompressed, but don't parse the full SBOM
-    # to avoid memory issues with large SBOMs
+    # Validate SBOM files are proper gzip (check magic bytes, don't decompress)
+    # Decompressing a truncated slice fails with EOFError for large SBOMs,
+    # so we just verify the gzip magic bytes are present.
     logger.info("Validating SBOM files...")
-    try:
-        # Quick validation - try to decompress first few bytes to check format
-        _safe_gzip_decompress(original_data[:1024*10] if len(original_data) > 1024*10 else original_data, max_size=_MAX_DECOMPRESSED_SIZE)
-        _safe_gzip_decompress(modified_data[:1024*10] if len(modified_data) > 1024*10 else modified_data, max_size=_MAX_DECOMPRESSED_SIZE)
-    except (gzip.BadGzipFile, ValueError) as e:
-        raise HTTPException(status_code=400, detail=f"Invalid SBOM file format: {e}")
+    for label, sbom_data in [("original", original_data), ("modified", modified_data)]:
+        if len(sbom_data) < 2 or sbom_data[:2] != b"\x1f\x8b":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid {label} SBOM: not valid gzip data (missing magic bytes)",
+            )
 
     # Parse packages for indexing - use streaming with size limit
     logger.info("Parsing packages JSON...")
@@ -288,6 +304,17 @@ async def upload_scan(
     total_files = sum(len(p.get("files", [])) for p in packages_list)
     logger.info(f"Parsed {len(packages_list)} packages with {total_files} files")
 
+    # Read raw dependency data (defer parsing until insert time to reduce peak memory)
+    _dep_compressed = None
+    if dependencies_json is not None:
+        logger.info("Reading dependencies JSON...")
+        try:
+            _dep_compressed = await dependencies_json.read()
+            logger.info(f"Dependencies data read: {len(_dep_compressed)/1024:.0f}KB compressed")
+        except Exception as e:
+            logger.warning(f"Failed to read dependencies JSON, skipping: {e}")
+            _dep_compressed = None
+
     # Create scan record first to get ID
     scan = Scan(
         product_id=product.id,
@@ -313,7 +340,8 @@ async def upload_scan(
 
     storage.put(original_key, original_data)
     storage.put(modified_key, modified_data)
-    logger.info("SBOMs stored successfully")
+    del original_data, modified_data
+    logger.info("SBOMs stored and freed from memory")
 
     # Update scan with storage keys
     scan.original_sbom_key = original_key
@@ -348,28 +376,29 @@ async def upload_scan(
             pkg.get("license"),
             pkg.get("purl"),
             pkg.get("cpes"),
+            pkg.get("layer_id"),
+            pkg.get("layer_index"),
+            pkg.get("source_image"),
         )
         for pkg in packages_list
     ]
 
+    _pkg_cols = "scan_id, product_id, name, version, release, arch, epoch, source_rpm, license, purl, cpes, layer_id, layer_index, source_image"
+
     if is_postgres:
-        # Use PostgreSQL's execute_values for fast bulk insert
         from psycopg2.extras import execute_values
         cursor = raw_conn.cursor()
         execute_values(
             cursor,
-            """INSERT INTO packages (scan_id, product_id, name, version, release, arch, epoch, source_rpm, license, purl, cpes)
-               VALUES %s""",
+            f"INSERT INTO packages ({_pkg_cols}) VALUES %s",
             package_tuples,
             page_size=1000
         )
         raw_conn.commit()
     else:
-        # SQLite - use executemany
         cursor = raw_conn.cursor()
         cursor.executemany(
-            """INSERT INTO packages (scan_id, product_id, name, version, release, arch, epoch, source_rpm, license, purl, cpes)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            f"INSERT INTO packages ({_pkg_cols}) VALUES ({','.join('?' * 14)})",
             package_tuples
         )
         raw_conn.commit()
@@ -379,22 +408,26 @@ async def upload_scan(
     # Check if we should skip file indexing for large scans
     config = get_config()
     skip_threshold = config.skip_file_index_threshold
+    skip_files = skip_threshold > 0 and total_files > skip_threshold
 
-    if skip_threshold > 0 and total_files > skip_threshold:
+    if skip_files:
         logger.info(f"Skipping file indexing: {total_files} files exceeds threshold of {skip_threshold}")
         logger.info("File search will not be available for this scan, but packages are indexed")
-        file_count_actual = 0
-    else:
-        # Get package IDs
+
+    # Retrieve package IDs (needed for file and/or dependency insertion)
+    need_pkg_ids = (not skip_files and total_files > 0) or _dep_compressed
+    packages_by_key = {}
+    if need_pkg_ids:
         logger.info("Retrieving package IDs...")
         cursor = raw_conn.cursor()
         cursor.execute("SELECT id, name, version, arch FROM packages WHERE scan_id = %s" if is_postgres else
                        "SELECT id, name, version, arch FROM packages WHERE scan_id = ?", (scan.id,))
         packages_by_key = {(row[1], row[2], row[3]): row[0] for row in cursor.fetchall()}
 
+    file_count_actual = 0
+    if not skip_files and total_files > 0:
         logger.info(f"Inserting {total_files} files...")
         bulk_start = time.time()
-        file_count_actual = 0
 
         if is_postgres:
             # Stream files directly to a temp file, then COPY - avoids holding all in memory
@@ -429,10 +462,11 @@ async def upload_scan(
             logger.info(f"Temp file written: {file_count_actual} files, {os.path.getsize(tmp_path)/1024/1024:.1f}MB")
 
             # Free packages_list memory before COPY
-            del packages_list
-            import gc
-            gc.collect()
-            logger.info("Memory freed, starting COPY...")
+            if not _dep_compressed:
+                del packages_list
+                import gc
+                gc.collect()
+                logger.info("Memory freed, starting COPY...")
 
             # COPY from file
             cursor = raw_conn.cursor()
@@ -491,11 +525,175 @@ async def upload_scan(
 
         logger.info(f"Files inserted in {time.time() - bulk_start:.1f}s")
 
+    # Insert dependencies -- stream-decompress to avoid holding full list in memory
+    dep_count = 0
+    if _dep_compressed:
+        logger.info("Streaming dependency inserts...")
+        dep_start = time.time()
+        DEP_BATCH = 10000
+        cursor = raw_conn.cursor()
+
+        if is_postgres:
+            from psycopg2.extras import execute_values
+            dep_sql = """INSERT INTO dependencies (package_id, scan_id, product_id, dependency_name, dependency_version, dependency_flags, dependency_type)
+                         VALUES %s"""
+        else:
+            dep_sql = """INSERT INTO dependencies (package_id, scan_id, product_id, dependency_name, dependency_version, dependency_flags, dependency_type)
+                         VALUES (?, ?, ?, ?, ?, ?, ?)"""
+
+        try:
+            dep_json_bytes = _safe_gzip_decompress(_dep_compressed)
+            del _dep_compressed
+
+            dep_text = dep_json_bytes.decode("utf-8")
+            del dep_json_bytes
+            import gc
+            gc.collect()
+
+            # Stream-parse JSON array one object at a time via raw_decode().
+            # Avoids json.loads() which materializes 1M+ dicts (~3GB) at once.
+            decoder = json.JSONDecoder()
+            pos = 0
+            length = len(dep_text)
+
+            while pos < length and dep_text[pos] in ' \t\n\r':
+                pos += 1
+            if pos < length and dep_text[pos] == '[':
+                pos += 1
+
+            batch = []
+            while pos < length:
+                while pos < length and dep_text[pos] in ' \t\n\r,':
+                    pos += 1
+                if pos >= length or dep_text[pos] == ']':
+                    break
+
+                dep, end_pos = decoder.raw_decode(dep_text, pos)
+                pos = end_pos
+
+                pkg_key = (dep.get("package_name", ""), dep.get("package_version"), dep.get("package_arch"))
+                package_id = packages_by_key.get(pkg_key)
+                batch.append((
+                    package_id,
+                    scan.id,
+                    product.id,
+                    dep.get("dependency_name", ""),
+                    dep.get("dependency_version"),
+                    dep.get("dependency_flags"),
+                    dep.get("dependency_type", "requires"),
+                ))
+                if len(batch) >= DEP_BATCH:
+                    if is_postgres:
+                        execute_values(cursor, dep_sql, batch, page_size=1000)
+                    else:
+                        cursor.executemany(dep_sql, batch)
+                    raw_conn.commit()
+                    dep_count += len(batch)
+                    logger.info(f"  Dependencies batch: {dep_count} inserted so far")
+                    batch = []
+
+            if batch:
+                if is_postgres:
+                    execute_values(cursor, dep_sql, batch, page_size=1000)
+                else:
+                    cursor.executemany(dep_sql, batch)
+                raw_conn.commit()
+                dep_count += len(batch)
+
+            del dep_text
+            gc.collect()
+        except Exception as e:
+            logger.warning(f"Failed to process dependencies: {e}")
+
+        logger.info(f"Dependencies inserted: {dep_count} in {time.time() - dep_start:.1f}s")
+
+    # Process image layers (container scans)
+    if image_layers_json is not None:
+        try:
+            layers_data = await image_layers_json.read()
+            layers_list = json.loads(_safe_gzip_decompress(layers_data).decode("utf-8"))
+            scan.image_layers_json = json.dumps(layers_list)
+
+            layer_tuples = [
+                (scan.id, layer.get("layer_id", ""), layer.get("layer_index", i),
+                 layer.get("source_image"), bool(layer.get("is_base", False)))
+                for i, layer in enumerate(layers_list)
+            ]
+            cursor = raw_conn.cursor()
+            if is_postgres:
+                from psycopg2.extras import execute_values
+                execute_values(
+                    cursor,
+                    "INSERT INTO image_layers (scan_id, layer_id, layer_index, source_image, is_base) VALUES %s",
+                    layer_tuples,
+                )
+            else:
+                cursor.executemany(
+                    "INSERT INTO image_layers (scan_id, layer_id, layer_index, source_image, is_base) VALUES (?, ?, ?, ?, ?)",
+                    layer_tuples,
+                )
+            raw_conn.commit()
+            logger.info(f"Stored {len(layers_list)} image layers")
+        except Exception as e:
+            logger.warning(f"Failed to process image layers: {e}")
+
+    # Process attestations (container scans)
+    if attestation_json is not None:
+        import base64
+        from datetime import datetime as dt
+        try:
+            att_data = await attestation_json.read()
+            att_list = json.loads(_safe_gzip_decompress(att_data).decode("utf-8"))
+
+            att_key = _generate_storage_key(product_name, product_version, scan.id, "attestation.json.gz")
+            storage.put(att_key, gzip.compress(json.dumps(att_list).encode()))
+
+            for envelope in att_list:
+                predicate_type = None
+                builder_id = None
+                build_type = None
+                build_started = None
+                build_finished = None
+
+                payload_b64 = envelope.get("payload", "")
+                if payload_b64:
+                    try:
+                        statement = json.loads(base64.b64decode(payload_b64))
+                        predicate_type = statement.get("predicateType")
+                        predicate = statement.get("predicate", {})
+                        builder_id = predicate.get("builder", {}).get("id")
+                        build_type = predicate.get("buildType")
+                        meta = predicate.get("metadata", {})
+                        if meta.get("buildStartedOn"):
+                            build_started = dt.fromisoformat(meta["buildStartedOn"].replace("Z", "+00:00"))
+                        if meta.get("buildFinishedOn"):
+                            build_finished = dt.fromisoformat(meta["buildFinishedOn"].replace("Z", "+00:00"))
+                    except Exception:
+                        predicate_type = envelope.get("_layer_annotations", {}).get("predicateType")
+
+                att_record = Attestation(
+                    scan_id=scan.id,
+                    predicate_type=predicate_type,
+                    builder_id=builder_id,
+                    build_type=build_type,
+                    build_started_on=build_started,
+                    build_finished_on=build_finished,
+                    attestation_key=att_key,
+                )
+                db.add(att_record)
+
+            db.commit()
+            logger.info(f"Stored {len(att_list)} attestation records")
+        except Exception as e:
+            logger.warning(f"Failed to process attestations: {e}")
+
     # Refresh session to pick up raw SQL changes
     db.expire_all()
 
     elapsed = time.time() - start_time
-    logger.info(f"Upload complete: {packages_count} packages, {file_count_actual} files indexed in {elapsed:.1f}s")
+    logger.info(f"Upload complete: {packages_count} packages, {file_count_actual} files, {dep_count} deps indexed in {elapsed:.1f}s")
+
+    invalidate_stats_cache()
 
     return ScanResponse(
         id=scan.id,
@@ -536,8 +734,11 @@ def delete_scan(scan_id: int, db: Session = Depends(get_db)):
     is_postgres = 'psycopg' in type(raw_conn).__module__ or 'postgresql' in str(db.bind.url)
     param = '%s' if is_postgres else '?'
 
+    cursor.execute(f"DELETE FROM dependencies WHERE scan_id = {param}", (scan_id,))
     cursor.execute(f"DELETE FROM files WHERE scan_id = {param}", (scan_id,))
     cursor.execute(f"DELETE FROM packages WHERE scan_id = {param}", (scan_id,))
     cursor.execute(f"DELETE FROM scans WHERE id = {param}", (scan_id,))
     raw_conn.commit()
     db.expire_all()
+
+    invalidate_stats_cache()

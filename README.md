@@ -1,8 +1,14 @@
 # Syfter
 
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/11827/badge)](https://www.bestpractices.dev/projects/11827)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/vdanen/syfter/badge)](https://scorecard.dev/viewer/?uri=github.com/vdanen/syfter)
+![GitHub release (latest SemVer)](https://img.shields.io/github/v/release/vdanen/syfter?sort=semver)
+![PyPI release](https://img.shields.io/pypi/s/syfter)
+![Downloads](https://static.pepy.tech/badge/syfter)
+
 SBOM generation and management tool using [Syft](https://github.com/anchore/syft).
 
-**Version: 0.9.0.1**
+**Version: 0.9.1.0**
 
 ## Overview
 
@@ -13,6 +19,21 @@ Syfter wraps the Anchore Syft tool to:
 - **Store** SBOMs in a queryable database (SQLite or PostgreSQL)
 - **Query** packages and files across all your products or systems
 - **Export** to customer-facing formats (SPDX, CycloneDX)
+
+### Enterprise Capabilities
+
+In addition to all standard syfter features, this release adds production-oriented server capabilities:
+
+| Feature | Description |
+|---------|-------------|
+| **API key authentication** | Per-team keys with admin management (`X-API-Key` header) |
+| **Rate limiting** | Token-bucket limits per key (queries and uploads per minute) |
+| **Response caching** | In-process cache with auto-invalidation on mutations |
+| **RPM dependency tracking** | Query requires/provides relationships at scale |
+| **Cross-product tracing** | `syfter trace` follows packages across repos, base images, and layered containers |
+| **Attestation metadata** | Cosign SLSA and SPDX attestation indexing |
+| **Component relationships** | Product-to-product composition mappings |
+| **Query performance** | Optimized PostgreSQL patterns for tens of millions of packages |
 
 ### Two Modes of Operation
 
@@ -154,7 +175,36 @@ export SYFTER_SERVER=http://localhost:8000
 
 # Or specify per-command
 syfter --server http://localhost:8000 products
+
+# Authenticated server (set your team API key)
+export SYFTER_API_KEY=your-team-key
 ```
+
+#### API Authentication
+
+When `SYFTER_AUTH_ENABLED=true` (the default), all API requests require an `X-API-Key` header except `/health`.
+
+```bash
+# Start the server with a seed admin key
+SYFTER_AUTH_ENABLED=true \
+SYFTER_ADMIN_API_KEY=$(python3 -c "import secrets; print(secrets.token_hex(32))") \
+SYFTER_DB_TYPE=postgresql \
+SYFTER_PG_HOST=localhost \
+SYFTER_PG_PASSWORD=changeme \
+python -m uvicorn server.main:app --host 0.0.0.0 --port 8000
+
+# Create a team key
+curl -X POST http://localhost:8000/api/v1/admin/keys/ \
+  -H "X-API-Key: $SYFTER_ADMIN_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"team_name": "security"}'
+
+export SYFTER_API_KEY=<returned-key>
+export SYFTER_SERVER=http://localhost:8000
+syfter products
+```
+
+Set `SYFTER_AUTH_ENABLED=false` for local development without API keys.
 
 #### Server Mode Commands
 
@@ -459,12 +509,12 @@ Options:
   --no-store                Don't store in database
 ```
 
-### `syfter query`
+### `syfter search` (alias: `query`)
 
-Query packages and files across all products.
+Search packages and files across all products.
 
 ```
-Usage: syfter query [OPTIONS]
+Usage: syfter search [OPTIONS]
 
 Options:
   -n, --name TEXT           Package name pattern (% = wildcard)
@@ -472,6 +522,50 @@ Options:
   -d, --digest TEXT         File digest (exact match)
   -p, --product TEXT        Filter by product name
   -v, --version TEXT        Filter by product version
+  --limit INTEGER           Maximum results (default: 50)
+  --json                    Output as JSON
+  --cross-product           Trace package across the full product stack (server mode)
+```
+
+The `query` command name is deprecated but still accepted.
+
+### `syfter trace`
+
+Trace a package across the product stack (RHEL repos, UBI base images, layered containers). Requires server mode.
+
+```
+Usage: syfter trace [OPTIONS] PACKAGE_NAME
+
+Options:
+  --pkg-version TEXT        Package version filter
+  --limit INTEGER           Maximum results per category (default: 200)
+  --json                    Output as JSON
+```
+
+### `syfter deps`
+
+Query RPM dependency relationships (requires server mode with indexed dependencies).
+
+```
+Usage: syfter deps [OPTIONS] [DEPENDENCY_NAME]
+
+Options:
+  --package TEXT            Filter by package name
+  --type [requires|provides]  Dependency type (default: requires)
+  -p, --product TEXT        Filter by product name
+  -v, --version TEXT        Filter by product version
+  --limit INTEGER           Maximum results (default: 50)
+  --json                    Output as JSON
+```
+
+### `syfter relationships`
+
+List component relationships between products (server mode).
+
+```
+Usage: syfter relationships [OPTIONS]
+
+Options:
   --limit INTEGER           Maximum results (default: 50)
   --json                    Output as JSON
 ```
@@ -723,6 +817,36 @@ Syfter uses Syft's native conversion to generate:
 | `SYFTER_S3_BUCKET` | S3 bucket name | `syfter-sboms` |
 | `SYFTER_S3_ACCESS_KEY` | S3 access key | (required for s3) |
 | `SYFTER_S3_SECRET_KEY` | S3 secret key | (required for s3) |
+| `SYFTER_API_KEY` | Client API key (server mode) | None |
+| `SYFTER_AUTH_ENABLED` | Enable API key authentication | `true` |
+| `SYFTER_ADMIN_API_KEY` | Seed key for initial admin access | None |
+| `SYFTER_AUTH_CACHE_TTL` | Auth validation cache TTL (seconds) | `60` |
+| `SYFTER_RATE_LIMIT_ENABLED` | Enable per-key rate limiting | `true` |
+| `SYFTER_RATE_LIMIT_QUERY` | Query requests per minute per key | `60` |
+| `SYFTER_RATE_LIMIT_QUERY_BURST` | Query burst allowance | `20` |
+| `SYFTER_RATE_LIMIT_UPLOAD` | Upload requests per minute per key | `10` |
+| `SYFTER_RATE_LIMIT_UPLOAD_BURST` | Upload burst allowance | `5` |
+| `SYFTER_CACHE_STATS_TTL` | Stats cache TTL (seconds) | `300` |
+| `SYFTER_CACHE_PRODUCTS_TTL` | Products cache TTL (seconds) | `300` |
+
+## Database Indexes (Large Scale)
+
+For deployments with 1M+ packages, these PostgreSQL indexes are critical for query performance:
+
+```sql
+-- LIKE prefix queries + ORDER BY (the COLLATE "C" is essential)
+CREATE INDEX idx_package_name_c ON packages (name COLLATE "C");
+
+-- LIKE via text_pattern_ops (used by the index scan filter)
+CREATE INDEX idx_package_name_pattern ON packages (name text_pattern_ops);
+
+-- Foreign key lookups for product-scoped counts
+CREATE INDEX idx_packages_product_id ON packages (product_id);
+CREATE INDEX idx_scan_product ON scans (product_id);
+
+-- Dependency queries (package-scoped + type filter)
+CREATE INDEX idx_dep_package_type ON dependencies (package_id, dependency_type);
+```
 
 ## Examples
 
@@ -804,6 +928,8 @@ See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for production deployment guidance 
 - systemd service files
 - Security considerations
 
+For OpenShift/Kubernetes deployments, the API container image is built from `podman/Containerfile`. A typical production stack includes the Syfter API (often with an oauth2-proxy sidecar for browser OIDC), PostgreSQL, and S3-compatible object storage (MinIO or AWS S3 via IRSA).
+
 ## Understanding Container Layers
 
 See [docs/MULTI-STAGE-BUILDS.md](docs/MULTI-STAGE-BUILDS.md) for details on:
@@ -827,6 +953,10 @@ pip install -e ".[all]"
 black syfter/
 ruff check syfter/
 ```
+
+## Credits
+
+[syfter](https://github.com/vdanen/syfter) by Vincent Danen, with contributions from Red Hat Product Security.
 
 ## License
 

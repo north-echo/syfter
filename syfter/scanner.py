@@ -915,6 +915,124 @@ def _quick_scan_for_packages(
             raise ScanError(f"Failed to scan base image {image}: {e.stderr}")
 
 
+def mirror_and_scan_url(
+    url: str,
+    show_progress: bool = True,
+    name: Optional[str] = None,
+    version: Optional[str] = None,
+    exclude_debug: bool = True,
+    include_patterns: Optional[list[str]] = None,
+) -> tuple[dict, str]:
+    """
+    Mirror an HTTP/HTTPS RPM repository to a temp directory and scan it.
+
+    Downloads RPMs from a remote URL (e.g., a Pulp or yum repository's
+    Packages directory), scans them with syft, and cleans up the
+    downloaded files.
+
+    Args:
+        url: HTTP/HTTPS URL to an RPM repository directory
+             (e.g., https://example.com/content/dist/rhel10/10.1/x86_64/baseos/os/Packages)
+        show_progress: Whether to show progress output
+        name: Optional name for the source
+        version: Optional version for the source
+        exclude_debug: Whether to exclude debuginfo/debugsource packages (default: True)
+        include_patterns: Optional list of glob patterns to include (default: ["*.rpm"])
+
+    Returns:
+        tuple: (SBOM dict, syft version string)
+
+    Raises:
+        ScanError: If mirroring or scanning fails
+    """
+    import atexit
+
+    wget_path = shutil.which("wget")
+    if not wget_path:
+        raise ScanError(
+            "wget is not installed. Install it to mirror remote RPM repositories. "
+            "On macOS: brew install wget"
+        )
+
+    # Ensure URL ends with /
+    if not url.endswith("/"):
+        url += "/"
+
+    # Create temp directory for the mirror
+    tmpdir = tempfile.mkdtemp(prefix="syfter-mirror-")
+    mirror_dir = Path(tmpdir) / "packages"
+    mirror_dir.mkdir()
+
+    # Register cleanup
+    def cleanup():
+        if Path(tmpdir).exists():
+            shutil.rmtree(tmpdir, ignore_errors=True)
+    atexit.register(cleanup)
+
+    console.print(f"[bold]Mirroring RPMs from:[/bold] {url}")
+
+    # Build wget command
+    reject_patterns = "*debuginfo*,*debugsource*" if exclude_debug else ""
+    cmd = [
+        "wget", "--mirror", "--no-parent", "--no-host-directories",
+        "--cut-dirs=100",  # Strip all directory components
+        "--directory-prefix", str(mirror_dir),
+        "--no-verbose",
+    ]
+
+    if reject_patterns:
+        cmd.extend(["--reject", reject_patterns])
+        cmd.extend(["--exclude-directories", "*/debug/*"])
+
+    # Accept only RPMs and directory listings
+    cmd.extend(["--accept", "*.rpm"])
+
+    cmd.append(url)
+
+    console.print(f"[dim]Downloading RPMs (this may take a while)...[/dim]")
+
+    try:
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE if not show_progress else None,
+            text=True,
+        )
+        _, stderr = process.communicate()
+
+        # wget returns 8 for some server responses (like 404 for some files)
+        # which is normal when mirroring. Only fail on critical errors.
+        if process.returncode not in (0, 8):
+            error_msg = stderr if stderr else f"wget exited with code {process.returncode}"
+            raise ScanError(f"Failed to mirror RPMs: {error_msg}")
+    except FileNotFoundError:
+        raise ScanError("wget not found in PATH")
+
+    # Count downloaded RPMs
+    rpm_files = list(mirror_dir.rglob("*.rpm"))
+    if not rpm_files:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        raise ScanError(f"No RPM files found at {url}")
+
+    console.print(f"[green]Downloaded {len(rpm_files)} RPM files[/green]")
+
+    # Scan the mirrored directory
+    try:
+        result = scan_directory(
+            mirror_dir,
+            show_progress=show_progress,
+            name=name,
+            version=version,
+            exclude_debug=exclude_debug,
+        )
+    finally:
+        # Clean up mirror
+        console.print(f"[dim]Cleaning up temporary mirror...[/dim]")
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+    return result
+
+
 def scan_localhost(
     show_progress: bool = True,
     exclude_debug: bool = True,
@@ -1156,14 +1274,24 @@ def get_source_type(target: str) -> str:
         target: The scan target
 
     Returns:
-        str: Source type (directory, container, archive, etc.)
+        str: Source type (directory, container, archive, url, etc.)
     """
+    # Archive file extensions (case-insensitive)
+    archive_suffixes = {".tar", ".gz", ".tgz", ".zip", ".tar.gz", ".tar.xz", ".tar.bz2"}
+
+    def _is_archive_suffix(suffix: str) -> bool:
+        return suffix.lower() in archive_suffixes
+
+    # Check for remote URL (HTTP/HTTPS RPM repository)
+    if target.startswith(("http://", "https://")):
+        return "url"
+
     # Check explicit prefixes first
     if target.startswith("dir:"):
         return "directory"
     elif target.startswith("file:"):
         path = Path(target[5:])
-        if path.suffix in (".tar", ".gz", ".tgz", ".zip"):
+        if _is_archive_suffix(path.suffix):
             return "archive"
         return "file"
     elif target.startswith(("docker:", "podman:", "registry:", "oci-dir:", "oci-archive:", "docker-archive:")):
@@ -1175,9 +1303,14 @@ def get_source_type(target: str) -> str:
     if path.is_dir():
         return "directory"
     elif path.is_file():
-        if path.suffix in (".tar", ".gz", ".tgz", ".zip"):
+        if _is_archive_suffix(path.suffix):
             return "archive"
         return "file"
+
+    # Even if the file doesn't exist, check the extension
+    # This handles cases where the file was deleted or path is relative
+    if _is_archive_suffix(path.suffix):
+        return "archive"
 
     # Only check for container image if it's not a filesystem path
     if _looks_like_container_image(target):

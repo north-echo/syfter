@@ -188,7 +188,7 @@ pip install "syfter[server]"
 pip install "syfter-0.9.0-py3-none-any.whl[server]"
 
 # Or from source
-git clone https://github.com/redhat/syfter.git
+git clone https://github.com/vdanen/syfter.git
 cd syfter
 pip install -e ".[server]"
 ```
@@ -302,6 +302,74 @@ syfter export -p rhel -v 10.0 -f spdx-json -o rhel-10.spdx.json
 1. **API**: Check `/health` endpoint
 2. **PostgreSQL**: Monitor connections and query performance
 3. **MinIO**: Monitor disk usage and request rates
+
+## OpenShift / ROSA HCP Deployment
+
+For deploying on OpenShift (including ROSA HCP on AWS), use the manifests in the `manifests/` directory. This provides a production-grade setup with PostgreSQL, S3 storage, Keycloak OIDC authentication, and built-in API key auth with rate limiting and response caching.
+
+### Prerequisites
+
+- OpenShift 4.14+ cluster with `oc` CLI configured
+- AWS S3 bucket for SBOM storage
+- Cluster admin access
+
+### Configuration
+
+Before deploying, replace placeholders in the manifest files. Search for `__` to find all values:
+
+| Placeholder | Description | Example |
+|---|---|---|
+| `__CLUSTER_DOMAIN__` | OpenShift apps domain | `apps.mycluster.example.com` |
+| `__OIDC_ISSUER_URL__` | Keycloak realm URL (auto-set by `setup-keycloak.sh`) | `https://keycloak-syfter.apps.example.com/realms/syfter` |
+| `__S3_BUCKET__` | S3 bucket name for SBOM storage | `syfter-sboms-myorg` |
+
+The PostgreSQL storage class defaults to `gp3-csi` (AWS). Update `manifests/postgres/statefulset.yaml` for other platforms.
+
+### Deploy
+
+```bash
+# 1. Namespace
+oc apply -f manifests/namespace.yaml
+
+# 2. Secrets
+oc -n syfter create secret generic syfter-db-credentials \
+  --from-literal=POSTGRES_USER=syfter \
+  --from-literal=POSTGRES_PASSWORD=$(openssl rand -hex 16) \
+  --from-literal=POSTGRES_DB=syfter
+
+oc -n syfter create secret generic syfter-admin-key \
+  --from-literal=api-key=$(python3 -c "import secrets; print(secrets.token_hex(32))")
+
+# 3. PostgreSQL
+oc apply -f manifests/postgres/
+
+# 4. Build and deploy API
+oc apply -f manifests/api/buildconfig.yaml -f manifests/api/imagestream.yaml
+oc -n syfter start-build syfter-api --follow
+oc apply -f manifests/api/
+
+# 5. Keycloak (browser access)
+./manifests/keycloak/setup-keycloak.sh deploy
+
+# 6. Verify
+curl https://syfter-cli-syfter.__CLUSTER_DOMAIN__/health
+```
+
+See `manifests/s3/irsa-setup.sh` for IRSA configuration (recommended over static S3 credentials on AWS).
+
+### Scanning RPM Repositories
+
+Use `scripts/scan-repodata.py` to scan RPM repositories by parsing `repodata/primary.xml.gz`:
+
+```bash
+export SYFTER_SERVER=https://syfter-cli-syfter.__CLUSTER_DOMAIN__
+export SYFTER_API_KEY=<your-key>
+python3 scripts/scan-repodata.py --workers 2
+```
+
+Set `PULP_BASE_URL` to override the default RPM repository server.
+
+For the full user setup guide, see [Getting-Started.md](Getting-Started.md).
 
 ## AWS S3 Configuration
 

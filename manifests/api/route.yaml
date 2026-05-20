@@ -1,0 +1,17 @@
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: syfter-api
+  namespace: syfter
+  labels:
+    app: syfter-api
+spec:
+  to:
+    kind: Service
+    name: syfter-api
+    weight: 100
+  port:
+    targetPort: proxy
+  tls:
+    termination: reencrypt
+    insecureEdgeTerminationPolicy: Redirect

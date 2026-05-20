@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import List, Optional
 
 from sqlalchemy import (
+    Boolean,
     Column,
     Integer,
     String,
@@ -112,7 +113,9 @@ class Scan(Base):
     product: Mapped[Optional["Product"]] = relationship(back_populates="scans")
     system: Mapped[Optional["System"]] = relationship(back_populates="scans")
     packages: Mapped[List["Package"]] = relationship(back_populates="scan", cascade="all, delete-orphan")
+    dependencies: Mapped[List["Dependency"]] = relationship(back_populates="scan", cascade="all, delete-orphan")
     image_layers: Mapped[List["ImageLayer"]] = relationship(back_populates="scan", cascade="all, delete-orphan")
+    attestations: Mapped[List["Attestation"]] = relationship(back_populates="scan", cascade="all, delete-orphan")
 
     __table_args__ = (
         Index("idx_scan_product", "product_id"),
@@ -132,6 +135,8 @@ class ImageLayer(Base):
     layer_id: Mapped[str] = mapped_column(String(100), nullable=False)  # sha256 digest
     layer_index: Mapped[int] = mapped_column(Integer, nullable=False)  # position (0=bottom)
     source_image: Mapped[Optional[str]] = mapped_column(String(500))  # image reference
+    is_base: Mapped[bool] = mapped_column(Boolean, default=False)  # true if from base image
+    command: Mapped[Optional[str]] = mapped_column(Text)  # Dockerfile instruction (RUN, COPY, etc.)
 
     # Relationships
     scan: Mapped["Scan"] = relationship(back_populates="image_layers")
@@ -139,7 +144,31 @@ class ImageLayer(Base):
     __table_args__ = (
         Index("idx_image_layer_scan", "scan_id"),
         Index("idx_image_layer_id", "layer_id"),
+        Index("idx_image_layer_base", "is_base"),
         UniqueConstraint("scan_id", "layer_id", name="uq_scan_layer"),
+    )
+
+
+class Attestation(Base):
+    """Attestation model - cosign attestation metadata for container scans."""
+
+    __tablename__ = "attestations"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    scan_id: Mapped[int] = mapped_column(ForeignKey("scans.id", ondelete="CASCADE"), nullable=False)
+
+    predicate_type: Mapped[Optional[str]] = mapped_column(String(200))
+    builder_id: Mapped[Optional[str]] = mapped_column(String(500))
+    build_type: Mapped[Optional[str]] = mapped_column(String(200))
+    build_started_on: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    build_finished_on: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    attestation_key: Mapped[str] = mapped_column(String(500), nullable=False)
+
+    scan: Mapped["Scan"] = relationship(back_populates="attestations")
+
+    __table_args__ = (
+        Index("idx_attestation_scan", "scan_id"),
+        Index("idx_attestation_predicate", "predicate_type"),
     )
 
 
@@ -212,59 +241,88 @@ class File(Base):
     )
 
 
-class Job(Base):
-    """Job model - tracks async import jobs."""
+class Dependency(Base):
+    """Dependency model - RPM requires/provides for a package."""
 
-    __tablename__ = "jobs"
+    __tablename__ = "dependencies"
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True)  # UUID
-    product_id: Mapped[Optional[int]] = mapped_column(ForeignKey("products.id"), nullable=True)
-    system_id: Mapped[Optional[int]] = mapped_column(ForeignKey("systems.id"), nullable=True)
-    scan_id: Mapped[Optional[int]] = mapped_column(ForeignKey("scans.id"), nullable=True)
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    package_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("packages.id", ondelete="CASCADE"), nullable=True
+    )
+    scan_id: Mapped[int] = mapped_column(
+        ForeignKey("scans.id", ondelete="CASCADE"), nullable=False
+    )
+    product_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("products.id"), nullable=True
+    )
 
-    # Job type: "product_import" or "system_import"
-    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending, processing, complete, failed
-    job_type: Mapped[str] = mapped_column(String(50), default="product_import")
+    dependency_name: Mapped[str] = mapped_column(Text, nullable=False)
+    dependency_version: Mapped[Optional[str]] = mapped_column(Text)
+    dependency_flags: Mapped[Optional[str]] = mapped_column(String(10))  # EQ, GE, LE, GT, LT
+    dependency_type: Mapped[str] = mapped_column(String(20), nullable=False)  # requires, provides
 
-    # S3 keys for uploaded files
-    original_sbom_key: Mapped[Optional[str]] = mapped_column(String(500))
-    modified_sbom_key: Mapped[Optional[str]] = mapped_column(String(500))
-    packages_tsv_key: Mapped[Optional[str]] = mapped_column(String(500))
-    files_tsv_key: Mapped[Optional[str]] = mapped_column(String(500))
-
-    # Metadata - for products
-    product_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    product_version: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
-
-    # Metadata - for systems
-    system_hostname: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    system_ip: Mapped[Optional[str]] = mapped_column(String(45), nullable=True)
-    system_tag: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    scan_label: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
-
-    # Common metadata
-    source_path: Mapped[str] = mapped_column(Text, nullable=False)
-    source_type: Mapped[str] = mapped_column(String(50), default="directory")
-    syft_version: Mapped[Optional[str]] = mapped_column(String(50))
-    image_layers_json: Mapped[Optional[str]] = mapped_column(Text)  # Container layer chain
-
-    # Progress tracking
-    total_packages: Mapped[int] = mapped_column(Integer, default=0)
-    total_files: Mapped[int] = mapped_column(Integer, default=0)
-    processed_packages: Mapped[int] = mapped_column(Integer, default=0)
-    processed_files: Mapped[int] = mapped_column(Integer, default=0)
-
-    # Error tracking
-    error_message: Mapped[Optional[str]] = mapped_column(Text)
-
-    # Timestamps
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
-    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    # Relationships
+    scan: Mapped["Scan"] = relationship(back_populates="dependencies")
 
     __table_args__ = (
-        Index("idx_job_status", "status"),
-        Index("idx_job_product", "product_id"),
-        Index("idx_job_system", "system_id"),
-        Index("idx_job_created", "created_at"),
+        Index("idx_dep_package", "package_id"),
+        Index("idx_dep_name", "dependency_name"),
+        Index("idx_dep_scan", "scan_id"),
+        Index("idx_dep_product", "product_id"),
+        Index("idx_dep_type", "dependency_type"),
+    )
+
+
+class ComponentRelationship(Base):
+    """Tracks product-to-product composition (e.g., container as component of layered product)."""
+
+    __tablename__ = "component_relationships"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    parent_product_id: Mapped[int] = mapped_column(
+        ForeignKey("products.id"), nullable=False
+    )
+    component_product_id: Mapped[int] = mapped_column(
+        ForeignKey("products.id"), nullable=False
+    )
+    relationship_type: Mapped[str] = mapped_column(
+        String(50), nullable=False
+    )  # "layered" or "maintained"
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    # Relationships
+    parent_product: Mapped["Product"] = relationship(foreign_keys=[parent_product_id])
+    component_product: Mapped["Product"] = relationship(foreign_keys=[component_product_id])
+
+    __table_args__ = (
+        Index("idx_cr_parent", "parent_product_id"),
+        Index("idx_cr_component", "component_product_id"),
+        UniqueConstraint(
+            "parent_product_id",
+            "component_product_id",
+            name="uq_parent_component",
+        ),
+    )
+
+
+class ApiKey(Base):
+    """API key for authentication."""
+
+    __tablename__ = "api_keys"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    key_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)  # SHA-256 hex
+    key_prefix: Mapped[str] = mapped_column(String(8), nullable=False)  # First 8 chars for identification
+    team_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+
+    __table_args__ = (
+        Index("idx_apikey_hash", "key_hash"),
+        Index("idx_apikey_team", "team_name"),
     )

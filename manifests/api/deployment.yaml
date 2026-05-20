@@ -1,0 +1,210 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: syfter-api
+  namespace: syfter
+  labels:
+    app: syfter-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: syfter-api
+  template:
+    metadata:
+      labels:
+        app: syfter-api
+    spec:
+      serviceAccountName: syfter-api
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        # OAuth proxy sidecar for browser-based Keycloak OIDC login
+        - name: oauth-proxy
+          image: quay.io/oauth2-proxy/oauth2-proxy:v7.7.1
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          args:
+            - --https-address=:4443
+            - --provider=oidc
+            - --oidc-issuer-url=__OIDC_ISSUER_URL__
+            - --client-id=syfter-api
+            - --client-secret-file=/etc/oauth-proxy/client-secret
+            - --upstream=http://localhost:8000
+            - --tls-cert-file=/etc/tls/private/tls.crt
+            - --tls-key-file=/etc/tls/private/tls.key
+            - --cookie-name=_syfter_oauth
+            - --email-domain=*
+            - --skip-auth-route=^/health$
+            - --skip-provider-button=true
+            - --pass-access-token=true
+            - --cookie-refresh=4m
+          env:
+            - name: OAUTH2_PROXY_COOKIE_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: syfter-oauth-proxy
+                  key: cookie-secret
+          ports:
+            - containerPort: 4443
+              protocol: TCP
+              name: proxy
+          volumeMounts:
+            - name: tls
+              mountPath: /etc/tls/private
+              readOnly: true
+            - name: oauth-proxy-secret
+              mountPath: /etc/oauth-proxy
+              readOnly: true
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "128Mi"
+              cpu: "100m"
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: 4443
+              scheme: HTTPS
+            initialDelaySeconds: 5
+            periodSeconds: 5
+        # Syfter Enterprise API — built-in auth, rate limiting, caching
+        - name: syfter-api
+          image: syfter-api:latest
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          ports:
+            - containerPort: 8000
+              protocol: TCP
+              name: http
+          env:
+            - name: SYFTER_HOST
+              value: "0.0.0.0"
+            - name: SYFTER_PORT
+              value: "8000"
+            - name: SYFTER_WORKERS
+              value: "4"
+            # Database
+            - name: SYFTER_DB_TYPE
+              value: "postgresql"
+            - name: SYFTER_PG_HOST
+              value: "syfter-postgres"
+            - name: SYFTER_PG_PORT
+              value: "5432"
+            - name: SYFTER_PG_DATABASE
+              value: "syfter"
+            - name: SYFTER_PG_USER
+              valueFrom:
+                secretKeyRef:
+                  name: syfter-db-credentials
+                  key: POSTGRES_USER
+            - name: SYFTER_PG_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: syfter-db-credentials
+                  key: POSTGRES_PASSWORD
+            # Storage
+            - name: SYFTER_STORAGE_TYPE
+              value: "s3"
+            - name: SYFTER_S3_ENDPOINT
+              value: "https://s3.us-east-1.amazonaws.com"
+            - name: SYFTER_S3_EXTERNAL_ENDPOINT
+              value: "https://s3.us-east-1.amazonaws.com"
+            - name: SYFTER_S3_BUCKET
+              value: "__S3_BUCKET__"
+            - name: SYFTER_S3_REGION
+              value: "us-east-1"
+            - name: SYFTER_S3_USE_SSL
+              value: "true"
+            - name: SYFTER_S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: syfter-s3-credentials
+                  key: AWS_ACCESS_KEY_ID
+                  optional: true
+            - name: SYFTER_S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: syfter-s3-credentials
+                  key: AWS_SECRET_ACCESS_KEY
+                  optional: true
+            - name: SYFTER_SKIP_FILE_INDEX_THRESHOLD
+              value: "100000"
+            # Authentication (built-in, replaces nginx gateway)
+            - name: SYFTER_AUTH_ENABLED
+              value: "true"
+            - name: SYFTER_ADMIN_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: syfter-admin-key
+                  key: api-key
+            # Proxy auth (trust X-Forwarded-User from oauth2-proxy)
+            - name: SYFTER_PROXY_AUTH_ENABLED
+              value: "true"
+            # Rate limiting (built-in, replaces nginx limit_req)
+            - name: SYFTER_RATE_LIMIT_QUERY
+              value: "60"
+            - name: SYFTER_RATE_LIMIT_UPLOAD
+              value: "10"
+            # Response caching
+            - name: SYFTER_CACHE_STATS_TTL
+              value: "300"
+            - name: SYFTER_CACHE_PRODUCTS_TTL
+              value: "300"
+          resources:
+            requests:
+              memory: "2Gi"
+              cpu: "500m"
+            limits:
+              memory: "12Gi"
+              cpu: "4000m"
+          volumeMounts:
+            - name: queries-patch
+              mountPath: /app/server/api/queries.py
+              subPath: queries.py
+              readOnly: true
+            - name: dashboard-patch
+              mountPath: /app/server/dashboard/index.html
+              subPath: index.html
+              readOnly: true
+            - name: dashboard-patch
+              mountPath: /app/server/dashboard/js/api.js
+              subPath: api.js
+              readOnly: true
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+      volumes:
+        - name: tls
+          secret:
+            secretName: syfter-api-tls
+        - name: oauth-proxy-secret
+          secret:
+            secretName: syfter-oauth-proxy
+        - name: dashboard-patch
+          configMap:
+            name: syfter-dashboard-patch
+        - name: queries-patch
+          configMap:
+            name: syfter-queries-patch

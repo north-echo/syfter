@@ -1,0 +1,25 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: syfter-db-allow-api-only
+  namespace: syfter
+spec:
+  podSelector:
+    matchLabels:
+      app: syfter-db
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: syfter-api
+        - podSelector:
+            matchLabels:
+              app: keycloak
+        - podSelector:
+            matchLabels:
+              app: syfter-stats-refresh
+      ports:
+        - protocol: TCP
+          port: 5432

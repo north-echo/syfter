@@ -4,7 +4,7 @@ This guide covers building syfter for distribution to client environments.
 
 ## Version
 
-Current version: **0.9.0.1**
+Current version: **0.9.1.0**
 
 Version is defined in:
 - `pyproject.toml` - Package metadata
@@ -72,7 +72,7 @@ uv tool install .
 uv tool install dist/syfter-0.9.0-py3-none-any.whl
 
 # Install from GitHub
-uv tool install git+https://github.com/redhat/syfter
+uv tool install git+https://github.com/vdanen/syfter
 
 # Upgrade to latest version
 uv tool upgrade syfter
@@ -203,7 +203,7 @@ Release:        1%{?dist}
 Summary:        SBOM generation and management tool using Syft
 
 License:        Apache-2.0
-URL:            https://github.com/redhat/syfter
+URL:            https://github.com/vdanen/syfter
 Source0:        %{name}-%{version}.tar.gz
 
 BuildArch:      noarch
@@ -352,7 +352,7 @@ For contributors and testing:
 
 ```bash
 # Clone repository
-git clone https://github.com/redhat/syfter.git
+git clone https://github.com/vdanen/syfter.git
 cd syfter
 
 # Create virtual environment and install dependencies
@@ -376,7 +376,7 @@ syfter --version
 
 ```bash
 # Clone repository
-git clone https://github.com/redhat/syfter.git
+git clone https://github.com/vdanen/syfter.git
 cd syfter
 
 # Create virtual environment

@@ -201,7 +201,7 @@ syfter scan -p eap -v 8.1 /Volumes/Extra/dists/jboss-eap-8.1.0.zip  11.72s user 
 Scanning the RHDM installer JAR archive:
 
 ``` shell
-❯ time syfter scan -p eap -v 8.1 /Volumes/Extra/dists/rhdm-installer-7.12.1.jar 
+❯ time syfter scan -p rhdm -v 7.12.1 /Volumes/Extra/dists/rhdm-installer-7.12.1.jar 
 ╭─────────────────────────────────────────────────────────────── Syfter Scan ────────────────────────────────────────────────────────────────╮
 │ Scanning: /Volumes/Extra/dists/rhdm-installer-7.12.1.jar                                                                                   │
 │ Product: eap-8.1                                                                                                                           │
@@ -209,7 +209,7 @@ Scanning the RHDM installer JAR archive:
 ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 Source type: file
 Using syft version: 1.40.0
-Running: syft /Volumes/Extra/dists/rhdm-installer-7.12.1.jar -o syft-json --source-name eap-8.1 --source-version 8.1
+Running: syft /Volumes/Extra/dists/rhdm-installer-7.12.1.jar -o syft-json --source-name rhdm-7.12.1 --source-version 7.12.1
  ✔ Indexed file system                                                                       /Volumes/Extra/dists/rhdm-installer-7.12.1.jar 
  ✔ Cataloged contents                                                      fa9819fb01caa57d283c5112808129cb0b309aa677fb1021157505fa5adc4bb0 
    ├── ✔ Packages                        [124 packages]  

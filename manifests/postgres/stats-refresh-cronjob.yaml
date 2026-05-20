@@ -1,0 +1,52 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: syfter-stats-refresh
+  namespace: syfter
+spec:
+  schedule: "*/5 * * * *"
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app: syfter-stats-refresh
+        spec:
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: refresh
+              image: registry.redhat.io/rhel9/postgresql-16:latest
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+              command:
+                - psql
+                - -h
+                - syfter-postgres
+                - -U
+                - syfter
+                - -d
+                - syfter
+                - -c
+                - "REFRESH MATERIALIZED VIEW CONCURRENTLY stats_cache;"
+              env:
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: syfter-db-credentials
+                      key: POSTGRES_PASSWORD
+              resources:
+                requests:
+                  memory: "32Mi"
+                  cpu: "25m"
+                limits:
+                  memory: "64Mi"
+                  cpu: "100m"

@@ -1,0 +1,84 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: syfter-db
+  namespace: syfter
+  labels:
+    app: syfter-db
+spec:
+  serviceName: syfter-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: syfter-db
+  template:
+    metadata:
+      labels:
+        app: syfter-db
+    spec:
+      securityContext:
+        runAsNonRoot: true
+      containers:
+        - name: postgresql
+          image: registry.redhat.io/rhel9/postgresql-16:latest
+          ports:
+            - containerPort: 5432
+              protocol: TCP
+          env:
+            - name: POSTGRESQL_USER
+              valueFrom:
+                secretKeyRef:
+                  name: syfter-db-credentials
+                  key: POSTGRES_USER
+            - name: POSTGRESQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: syfter-db-credentials
+                  key: POSTGRES_PASSWORD
+            - name: POSTGRESQL_DATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: syfter-db-credentials
+                  key: POSTGRES_DB
+            - name: POSTGRESQL_MAX_CONNECTIONS
+              value: "100"
+          args:
+            - "run-postgresql"
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "2Gi"
+              cpu: "2000m"
+          volumeMounts:
+            - name: db-data
+              mountPath: /var/lib/pgsql/data
+            - name: pg-tuning
+              mountPath: /opt/app-root/src/postgresql-cfg
+          livenessProbe:
+            exec:
+              command:
+                - /usr/libexec/check-container
+                - --live
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            exec:
+              command:
+                - /usr/libexec/check-container
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: pg-tuning
+          configMap:
+            name: syfter-pg-tuning
+  volumeClaimTemplates:
+    - metadata:
+        name: db-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: gp3-csi  # Change to match your cluster (e.g., gp3-csi, managed-premium, standard)
+        resources:
+          requests:
+            storage: 500Gi

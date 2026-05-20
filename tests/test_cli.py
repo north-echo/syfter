@@ -75,8 +75,8 @@ class TestQueryCommand:
         assert result.exit_code == 0
     
     def test_query_json_option(self, runner):
-        """Query with --json should output JSON."""
-        result = runner.invoke(main, ["--local", "query", "-n", "nonexistent-pkg-12345", "--json"])
+        """Search with --json should output JSON."""
+        result = runner.invoke(main, ["--local", "search", "-n", "nonexistent-pkg-12345", "--json"])
         assert result.exit_code == 0
         # Should be valid JSON (even if empty array)
         data = json.loads(result.output)

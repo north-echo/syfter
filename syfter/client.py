@@ -5,6 +5,7 @@ API client for communicating with the Syfter server.
 import gzip
 import io
 import json
+import os
 import time
 from pathlib import Path
 from typing import Optional, Tuple, List
@@ -103,11 +104,24 @@ class SyfterClient:
         self.base_url = base_url.rstrip("/")
         self.api_url = f"{self.base_url}/api/v1"
         self.timeout = timeout
+
+        # Build default headers
+        headers = {}
+
+        # Support API key auth via SYFTER_API_KEY env var
+        api_key = os.environ.get("SYFTER_API_KEY")
+        if api_key:
+            headers["X-API-Key"] = api_key
+
+        self._api_key = api_key
+        self._headers = headers
+
         # Use longer timeouts for uploads - large SBOMs can take minutes
         # Force HTTP/1.1 for large uploads - HTTP/2 can have issues with very large requests
         self.client = httpx.Client(
             timeout=httpx.Timeout(timeout, connect=30.0, read=timeout, write=timeout),
             http2=False,  # Disable HTTP/2 for more reliable large uploads
+            headers=headers,
         )
 
     def _url(self, path: str) -> str:
@@ -264,6 +278,10 @@ class SyfterClient:
                 "--max-time", "10800",  # 3 hours max for very large uploads
             ]
 
+            # Pass API key header to curl if set
+            if self._api_key:
+                curl_cmd.extend(["-H", f"X-API-Key: {self._api_key}"])
+
             result = subprocess.run(curl_cmd, capture_output=True, text=True)
 
             if result.returncode != 0:
@@ -280,6 +298,12 @@ class SyfterClient:
     def delete_scan(self, scan_id: int) -> None:
         """Delete a scan."""
         response = self.client.delete(self._url(f"/scans/{scan_id}"))
+        if response.status_code >= 400:
+            self._handle_response(response)
+
+    def delete_product(self, product_name: str, product_version: str) -> None:
+        """Delete a product and all its scans."""
+        response = self.client.delete(self._url(f"/products/{product_name}/{product_version}"))
         if response.status_code >= 400:
             self._handle_response(response)
 
@@ -562,6 +586,7 @@ class SyfterClient:
     def search_packages(
         self,
         name: Optional[str] = None,
+        pkg_version: Optional[str] = None,
         product_name: Optional[str] = None,
         product_version: Optional[str] = None,
         limit: int = 100,
@@ -570,6 +595,8 @@ class SyfterClient:
         params = {"limit": limit}
         if name:
             params["name"] = name
+        if pkg_version:
+            params["pkg_version"] = pkg_version
         if product_name:
             params["product_name"] = product_name
         if product_version:
@@ -598,6 +625,50 @@ class SyfterClient:
             params["product_version"] = product_version
 
         response = self.client.get(self._url("/query/files"), params=params)
+        return self._handle_response(response)
+
+    def trace_package(
+        self,
+        name: str,
+        pkg_version: Optional[str] = None,
+        limit: int = 200,
+    ) -> dict:
+        """Trace a package across the product stack."""
+        params = {"name": name, "limit": limit}
+        if pkg_version:
+            params["pkg_version"] = pkg_version
+        response = self.client.get(self._url("/query/trace"), params=params)
+        return self._handle_response(response)
+
+    def search_dependencies(
+        self,
+        package_name: Optional[str] = None,
+        dependency_name: Optional[str] = None,
+        dependency_type: Optional[str] = None,
+        product_name: Optional[str] = None,
+        product_version: Optional[str] = None,
+        limit: int = 100,
+    ) -> list:
+        """Search RPM dependencies (requires/provides)."""
+        params = {"limit": limit}
+        if package_name:
+            params["package_name"] = package_name
+        if dependency_name:
+            params["dependency_name"] = dependency_name
+        if dependency_type:
+            params["dependency_type"] = dependency_type
+        if product_name:
+            params["product_name"] = product_name
+        if product_version:
+            params["product_version"] = product_version
+
+        response = self.client.get(self._url("/query/dependencies"), params=params)
+        return self._handle_response(response)
+
+    def list_relationships(self, limit: int = 100) -> list:
+        """List component relationships."""
+        params = {"limit": limit}
+        response = self.client.get(self._url("/relationships/"), params=params)
         return self._handle_response(response)
 
     def list_all_packages(
@@ -900,7 +971,5 @@ def get_client(server_url: Optional[str] = None) -> SyfterClient:
     Returns:
         SyfterClient: Client instance
     """
-    import os
-
     url = server_url or os.getenv("SYFTER_SERVER", "http://localhost:8000")
     return SyfterClient(url)

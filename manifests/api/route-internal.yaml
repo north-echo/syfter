@@ -1,0 +1,20 @@
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: syfter-api-internal
+  namespace: syfter
+  labels:
+    app: syfter-api
+  annotations:
+    haproxy.router.openshift.io/timeout: 600s
+spec:
+  host: syfter-cli-syfter.__CLUSTER_DOMAIN__
+  to:
+    kind: Service
+    name: syfter-api
+    weight: 100
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

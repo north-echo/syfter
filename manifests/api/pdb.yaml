@@ -1,0 +1,12 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: syfter-api-pdb
+  namespace: syfter
+  labels:
+    app: syfter-api
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: syfter-api
