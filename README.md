@@ -30,7 +30,99 @@ Tested in production with:
 - 1,038 cosign attestation records
 - All query endpoints < 2 seconds
 
-## Quick Start
+## Install the CLI
+
+### macOS
+
+```bash
+uv tool install "git+https://github.com/north-echo/syfter@develop"
+```
+
+Or with pip:
+
+```bash
+pip install "git+https://github.com/north-echo/syfter@develop"
+```
+
+### Linux
+
+```bash
+pip install "git+https://github.com/north-echo/syfter@develop"
+```
+
+If you hit PEP 668 restrictions, use `pipx` or `uv`:
+
+```bash
+pipx install "git+https://github.com/north-echo/syfter@develop"
+```
+
+### Verify
+
+```bash
+syfter --version
+```
+
+If `syfter` is not found, ensure `~/.local/bin` is in your PATH:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+> **Note:** If you previously installed the upstream `syfter` from `vdanen/syfter` or PyPI, uninstall it first (`uv tool uninstall syfter` or `pip uninstall syfter`). This fork adds auth, tracing, and dependency commands that the upstream CLI does not have.
+
+## Configure
+
+Set two environment variables and you're ready to go:
+
+```bash
+export SYFTER_SERVER=https://your-server.example.com
+export SYFTER_API_KEY=your-api-key
+```
+
+Verify:
+
+```bash
+syfter stats
+```
+
+## CLI Usage
+
+```bash
+# Search for packages (% is a wildcard)
+syfter query -n "openssl%"
+syfter query -n "curl%" -p rhel -v 10.0 --json
+
+# List products
+syfter products
+
+# List packages in a product
+syfter list -p rhel -v 10.0 -t packages
+
+# Trace a package across the product stack (RHEL -> UBI -> layered containers)
+syfter trace openssl-libs
+
+# Query RPM dependencies
+syfter deps openssl-libs                          # what requires openssl-libs?
+syfter deps --package curl --type requires        # what does curl require?
+syfter deps openssl-libs -p rhel -v 9.6           # scoped to a product
+
+# Export SBOMs
+syfter export -p rhel -v 10.0 -f spdx-json -o rhel.spdx.json
+syfter export -p rhel -v 10.0 -f cyclonedx-json -o rhel.cdx.json
+
+# Scan and upload
+syfter scan /path/to/rpms -p rhel -v 10.1
+
+# Component relationships
+syfter relationships
+
+# Delete a product
+syfter delete -p myproduct -v 1.0
+```
+
+For full command help: `syfter --help` or `syfter <command> --help`.
+
+## Server Quick Start
 
 ```bash
 # Start the server
@@ -49,38 +141,6 @@ curl -X POST http://localhost:8000/api/v1/admin/keys/ \
   -H "X-API-Key: $SYFTER_ADMIN_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"team_name": "security"}'
-
-# Use the team key
-export SYFTER_API_KEY=<returned-key>
-export SYFTER_SERVER=http://localhost:8000
-syfter products
-syfter query -n "openssl%"
-```
-
-## CLI
-
-The CLI extends upstream with `trace` and `deps` commands:
-
-```bash
-export SYFTER_SERVER=https://your-server.example.com
-export SYFTER_API_KEY=your-team-key
-
-# Standard commands (same as upstream)
-syfter scan /path/to/rpms -p rhel -v 10.1
-syfter query -n "openssl%"
-syfter products
-syfter export -p rhel -v 10.0 -f spdx-json -o rhel.spdx.json
-
-# Trace a package across the product stack
-syfter trace openssl-libs
-
-# Query RPM dependencies
-syfter deps openssl-libs                          # what requires openssl-libs?
-syfter deps --package curl --type requires        # what does curl require?
-syfter deps openssl-libs -p rhel -v 9.6           # scoped to a product
-
-# Component relationships
-syfter relationships
 ```
 
 ## API Endpoints
