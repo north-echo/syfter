@@ -104,6 +104,30 @@ pip install -e .
 pip install -e ".[all]"
 ```
 
+### Install from develop branch
+
+The `develop` branch includes enterprise features (API key auth, rate limiting, response caching, `trace`, `deps` commands) not yet released to PyPI:
+
+```bash
+uv tool install "git+https://github.com/vdanen/syfter@develop"
+```
+
+Or with pip:
+
+```bash
+pip install "git+https://github.com/vdanen/syfter@develop"
+```
+
+If you hit PEP 668 restrictions, use `pipx`:
+
+```bash
+pipx install "git+https://github.com/vdanen/syfter@develop"
+```
+
+If `syfter` is not found after install, ensure `~/.local/bin` is in your PATH.
+
+> **Note:** If you previously installed `syfter` from PyPI, uninstall it first (`uv tool uninstall syfter` or `pip uninstall syfter`) before installing from the develop branch.
+
 See [docs/BUILDING.md](docs/BUILDING.md) for detailed build and distribution options.
 
 ## Deployment Options
