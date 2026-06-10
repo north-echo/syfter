@@ -796,8 +796,9 @@ def _format_source_type(source_type: str) -> str:
 
 
 @main.command("products")
+@click.option("--filter", "-f", "name_filter", default=None, help="Filter by product name (case-insensitive substring match)")
 @click.pass_context
-def list_products(ctx):
+def list_products(ctx, name_filter):
     """List all products in the database."""
     if ctx.obj["local_mode"]:
         from .storage import Storage
@@ -814,11 +815,18 @@ def list_products(ctx):
             console.print("[dim]Is the server running? Check with: curl {}/health[/dim]".format(ctx.obj['server_url']))
             sys.exit(1)
 
+    if name_filter:
+        name_filter_lower = name_filter.lower()
+        products = [
+            p for p in products
+            if name_filter_lower in (p["name"] if isinstance(p, dict) else p.name).lower()
+        ]
+
     if not products:
         console.print("[yellow]No products found[/yellow]")
         return
 
-    table = Table(title="Products", box=box.SIMPLE)
+    table = Table(title=f"Products ({len(products):,} total)", box=box.SIMPLE)
     table.add_column("Name", style="cyan")
     table.add_column("Version", style="green")
     table.add_column("Type", style="magenta")
