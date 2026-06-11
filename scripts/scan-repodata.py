@@ -21,7 +21,7 @@ Usage:
 
 Prerequisites:
     - SYFTER_SERVER set to the syfter API endpoint
-    - Network access to rhsm-pulp.corp.redhat.com
+    - Network access to your Pulp content mirror (set PULP_BASE_URL)
 """
 
 import argparse
@@ -46,7 +46,8 @@ from scanner_common import upload_to_syfter, load_progress, save_progress
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
-PULP_BASE = "https://rhsm-pulp.corp.redhat.com"
+# Pulp RPM content mirror -- set PULP_BASE_URL to your mirror's base URL
+PULP_BASE = os.environ.get("PULP_BASE_URL", "https://pulp.example.com")
 CONTENT_URL = f"{PULP_BASE}/content"
 MAX_CRAWL_DEPTH = 15
 CRAWL_DELAY = 0.15
@@ -163,6 +164,105 @@ def record_timestamp(progress, key, packages_url):
         "last_modified": last_mod,
         "scanned_at": datetime.now().isoformat(),
     }
+
+
+# ─── Product-Definitions Filter ──────────────────────────────────────────────
+
+_VARIANT_RE = re.compile(r"^([A-Za-z]+)-(\d+\.\d+)")
+_COMPOSE_VARIANT_RE = re.compile(r"^([A-Za-z]+)$")
+_RHEL_MODULE_RE = re.compile(r"rhel-(\d+)")
+_RHEL_PRODUCT_RE = re.compile(r"^(?:aus|e4s|eus|tus|beta|beta-layered)?-?rhel-?(\d+)")
+
+
+def load_prod_defs(repo_path):
+    """Parse a product-definitions checkout and return the set of active
+    (rhel_major, minor_version, variant_lower) tuples.
+
+    For example, if rhel-9 module has active stream rhel-9.6.z with
+    errata_info variant "BaseOS-9.6.0.Z.EUS", this yields ("9", "9.6", "baseos").
+    """
+    data_dir = os.path.join(repo_path, "data")
+    if not os.path.isdir(data_dir):
+        sys.exit(f"Error: {data_dir} not found -- is this a product-definitions checkout?")
+
+    allowed = set()
+    module_count = 0
+
+    for dirpath, _dirnames, filenames in os.walk(data_dir):
+        for fname in filenames:
+            if not fname.endswith(".json"):
+                continue
+            fpath = os.path.join(dirpath, fname)
+            try:
+                with open(fpath) as f:
+                    data = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                continue
+
+            ps_modules = data.get("ps_modules", {})
+            ps_streams = data.get("ps_update_streams", {})
+
+            for mod_name, mod_data in ps_modules.items():
+                m = _RHEL_MODULE_RE.search(mod_name)
+                if not m:
+                    continue
+                rhel_major = m.group(1)
+
+                if mod_name.startswith("rhel-br-"):
+                    continue
+
+                active_streams = mod_data.get("active_ps_update_streams", [])
+                if not active_streams:
+                    continue
+                module_count += 1
+
+                for stream_name in active_streams:
+                    stream = ps_streams.get(stream_name, {})
+
+                    for ei in stream.get("errata_info", []):
+                        for pv in ei.get("product_versions", []):
+                            for variant in pv.get("variants", []):
+                                vm = _VARIANT_RE.match(variant)
+                                if vm:
+                                    variant_lower = vm.group(1).lower()
+                                    minor_ver = vm.group(2)
+                                    allowed.add((rhel_major, minor_ver, variant_lower))
+
+                    for compose in stream.get("composes", []):
+                        stream_ver_m = re.search(r"(\d+\.\d+)", stream_name)
+                        if not stream_ver_m:
+                            continue
+                        minor_ver = stream_ver_m.group(1)
+                        for variant in compose.get("variants", []):
+                            allowed.add((rhel_major, minor_ver, variant.lower()))
+
+    return allowed, module_count
+
+
+def matches_prod_defs(product, version, allowed):
+    """Check if a discovered repo matches any active product-definitions stream.
+
+    Non-RHEL products (no rhelN in name) pass through unconditionally.
+    """
+    m = _RHEL_PRODUCT_RE.search(product)
+    if not m:
+        return True
+    rhel_major = m.group(1)
+
+    parts = product.split("-")
+    rhel_idx = next(
+        (i for i, p in enumerate(parts) if re.match(rf"^rhel{rhel_major}$", p)), None
+    )
+    if rhel_idx is None or rhel_idx + 1 >= len(parts):
+        return True
+    variant = "-".join(parts[rhel_idx + 1:]).lower()
+
+    ver_m = re.match(r"(\d+\.\d+)", version)
+    if not ver_m:
+        return True
+    minor_ver = ver_m.group(1)
+
+    return (rhel_major, minor_ver, variant) in allowed
 
 
 # ─── Repo Discovery ──────────────────────────────────────────────────────────
@@ -621,7 +721,7 @@ def check_pulp_reachable():
                 resp.read(100)
             return
         except Exception:
-            logging.warning("  rhsm-pulp unreachable — retrying in 30s...")
+            logging.warning("  Pulp mirror unreachable -- retrying in 30s...")
             time.sleep(30)
 
 
@@ -644,11 +744,23 @@ def main():
                     help="Skip file data when repo exceeds this count (default: 100000)")
     ap.add_argument("--no-deps", action="store_true",
                     help="Skip dependency extraction (requires/provides)")
+    ap.add_argument("--prod-defs", metavar="PATH",
+                    help="Path to product-definitions checkout; only scan repos "
+                         "matching active ps_update_streams")
+    ap.add_argument("--prod-defs-report", action="store_true",
+                    help="With --discover-only, show which repos pass the filter")
     args = ap.parse_args()
 
     server_url = os.environ.get("SYFTER_SERVER")
     if not server_url and not args.discover_only:
         sys.exit("Error: SYFTER_SERVER not set")
+
+    prod_defs_filter = None
+    if args.prod_defs:
+        prod_defs_filter, mod_count = load_prod_defs(args.prod_defs)
+        print(f"Product-definitions filter active: "
+              f"{len(prod_defs_filter)} active stream/variant combos "
+              f"from {mod_count} modules")
 
     # Logging
     log_fmt = logging.Formatter("%(asctime)s  %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
@@ -678,19 +790,31 @@ def main():
     all_repos = []
     logging.info(f"Discovering repos across {len(trees)} content trees...")
 
+    filtered_count = 0
     for tree in trees:
         tree_url = f"{CONTENT_URL}/{tree}"
         logging.info(f"  {tree} ...")
         count = 0
+        tree_filtered = 0
         for packages_url, repo_url, repo_path in discover_repos(tree_url):
             product, version, desc = path_to_scan_info(tree, repo_path)
             key = f"{product}:{version}"
+            if prod_defs_filter is not None and not matches_prod_defs(product, version, prod_defs_filter):
+                tree_filtered += 1
+                continue
             all_repos.append((packages_url, repo_url, product, version, desc, key))
             count += 1
+        parts = []
         if count:
-            logging.info(f"    → {count} repos")
+            parts.append(f"{count} repos")
+        if tree_filtered:
+            parts.append(f"{tree_filtered} filtered out by prod-defs")
+            filtered_count += tree_filtered
+        if parts:
+            logging.info(f"    -> {', '.join(parts)}")
 
-    logging.info(f"\nDiscovered {len(all_repos)} total repos\n")
+    filter_msg = f" ({filtered_count} filtered by prod-defs)" if filtered_count else ""
+    logging.info(f"\nDiscovered {len(all_repos)} repos to scan{filter_msg}\n")
 
     # ── Discover-only ──
     if args.discover_only:
@@ -706,11 +830,22 @@ def main():
                 tag = "FAIL"
             else:
                 tag = "TODO"
-            print(f"[{tag}] {product}  {version}  —  {desc}")
+            print(f"[{tag}] {product}  {version}  --  {desc}")
         todo = sum(1 for *_, k in all_repos
                    if k not in completed and k not in skipped and k not in failed)
         print(f"\n{len(all_repos)} total | {len(completed)} done | "
               f"{len(skipped)} skipped | {len(failed)} failed | {todo} new")
+        if filtered_count:
+            print(f"{filtered_count} repos excluded by product-definitions filter")
+        if args.prod_defs_report and prod_defs_filter is not None:
+            print(f"\n--- Product-definitions active streams ---")
+            by_major = {}
+            for rhel_major, minor_ver, variant in sorted(prod_defs_filter):
+                by_major.setdefault(f"rhel-{rhel_major}", set()).add(
+                    f"{minor_ver}/{variant}"
+                )
+            for mod, entries in sorted(by_major.items()):
+                print(f"  {mod}: {', '.join(sorted(entries))}")
         return
 
     # ── Build scan queue ──

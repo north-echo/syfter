@@ -9,7 +9,7 @@ package index format and uploads them. Covers middleware products
 Usage:
     # Single manifest (file, URL, or SBOMer ID)
     python3 scan-sbomer.py --file manifest.json --product eap --version 7.4.23
-    python3 scan-sbomer.py --url https://sbomer.pnc.engineering.redhat.com/api/v1beta1/manifests/<id>/bom \\
+    python3 scan-sbomer.py --url https://sbomer.example.com/api/v1beta1/manifests/<id>/bom \\
         --product eap --version 7.4.23
     python3 scan-sbomer.py --dir /path/to/manifests/ --product eap --version 7.4.23
 
@@ -44,7 +44,8 @@ logging.basicConfig(
 )
 log = logging.getLogger("scan-sbomer")
 
-SBOMER_API = "https://sbomer.pnc.engineering.redhat.com/api/v1beta1"
+# SBOMer CycloneDX manifest service -- set SBOMER_API_URL to your instance
+SBOMER_API = os.environ.get("SBOMER_API_URL", "https://sbomer.example.com/api/v1beta1")
 PROGRESS_FILE = "scan-progress-sbomer.json"
 
 # ─── SBOMer API Discovery ────────────────────────────────────────────────────
