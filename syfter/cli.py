@@ -1305,6 +1305,254 @@ def deps_cmd(ctx, dependency_name, package_name, dep_type, product_name, product
         sys.exit(1)
 
 
+@main.command("vulns")
+@click.option("-p", "--product", required=True, help="Product name")
+@click.option("-v", "--version", "product_version", required=True, help="Product version")
+@click.option("--module", help="OSIDB ps_module (e.g., rhel-9). Auto-detected if omitted.")
+@click.option("--env", type=click.Choice(["prod", "uat"]), default="prod", help="OSIDB environment")
+@click.option("--workers", type=int, default=4, help="Parallel OSIDB query workers")
+@click.option("--json", "output_json", is_flag=True, help="Output as JSON")
+@click.option("-o", "--output", type=click.Path(), help="Write report to file")
+@click.option("--no-cache", is_flag=True, help="Disable OSIDB affect cache")
+@click.option("--cache-ttl", type=int, default=3600, help="Cache TTL in seconds")
+@click.pass_context
+def vulns_cmd(ctx, product, product_version, module, env, workers, output_json, output, no_cache, cache_ttl):
+    """Query OSIDB for unresolved CVEs affecting a product.
+
+    Resolves package list from syfter and correlates with OSIDB
+    vulnerability data. Requires SYFTER_SERVER to be set.
+
+    Examples:
+
+        syfter vulns -p rhel-baseos -v 9.6
+
+        syfter vulns -p ubi9 -v 9.7 --module rhel-9
+
+        syfter vulns -p go-toolset -v 1.25 --json
+
+        syfter vulns -p rhel-baseos -v 9.6 -o report.md
+    """
+    import concurrent.futures
+    from collections import defaultdict
+    from .osidb import (
+        ENVS, OsidbCache, detect_module, get_affects_cached,
+        get_flaws_batch, get_rh_cvss,
+    )
+
+    if ctx.obj["local_mode"]:
+        console.print("[yellow]Vulnerability queries require server mode.[/yellow]")
+        console.print("Set SYFTER_SERVER or use --server to connect.")
+        return
+
+    from .client import SyfterClient, APIError
+
+    server_url = ctx.obj["server_url"]
+
+    console.print(f"Fetching packages for {product}:{product_version}...", style="dim")
+    try:
+        with SyfterClient(server_url) as client:
+            packages = client.list_all_packages(product, product_version)
+    except Exception as e:
+        console.print(f"[red]Failed to fetch packages: {e}[/red]")
+        sys.exit(1)
+
+    if not packages:
+        console.print(f"[yellow]No packages found for {product}:{product_version}[/yellow]")
+        return
+
+    def _source_name(pkg):
+        srpm = pkg.get("source_rpm") or ""
+        if srpm:
+            parts = srpm.rsplit("-", 2)
+            if len(parts) >= 3:
+                return parts[0]
+        return pkg.get("name", "")
+
+    components = sorted(set(_source_name(pkg) for pkg in packages))
+    components = [c for c in components if c]
+
+    if not module:
+        module = detect_module(packages)
+    if not module:
+        console.print("[red]Could not auto-detect RHEL module. Use --module to specify.[/red]")
+        sys.exit(1)
+
+    console.print(f"  {len(packages)} packages, {len(components)} unique components", style="dim")
+    console.print(f"  Module: {module}", style="dim")
+
+    base_url = ENVS[env]
+    cache = None
+    if not no_cache and cache_ttl > 0:
+        cache = OsidbCache(ttl=cache_ttl)
+
+    console.print(f"Querying OSIDB ({env}) for unresolved affects...", style="dim")
+    all_affects = []
+    flaw_to_components = defaultdict(set)
+    cache_hits = 0
+    cache_misses = 0
+
+    cached_components = set()
+    if cache:
+        for c in components:
+            if cache.get(module, c) is not None:
+                cached_components.add(c)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+        futures = {
+            ex.submit(get_affects_cached, base_url, module, c, cache): c
+            for c in components
+        }
+        for f in concurrent.futures.as_completed(futures):
+            comp = futures[f]
+            try:
+                affects = f.result()
+            except Exception as e:
+                console.print(f"  [red]{comp}: {e}[/red]")
+                continue
+            was_cached = comp in cached_components
+            if was_cached:
+                cache_hits += 1
+            else:
+                cache_misses += 1
+            if affects:
+                console.print(f"  {comp}: {len(affects)} open affects"
+                              f"{'  (cached)' if was_cached else ''}", style="dim")
+            for a in affects:
+                flaw_to_components[a["flaw"]].add(comp)
+            all_affects.extend(affects)
+
+    if cache:
+        cache.save()
+
+    if not all_affects:
+        console.print(f"\n[green]No unresolved CVEs found for {product}:{product_version}[/green]")
+        if output:
+            with open(output, "w") as f:
+                f.write(f"# Unresolved CVEs Report\n\n")
+                f.write(f"**Product:** {product}:{product_version}\n")
+                f.write(f"**Module:** {module}\n")
+                f.write(f"**Components scanned:** {len(components)}\n")
+                f.write(f"**Unresolved CVEs found:** 0\n")
+            console.print(f"Report written to {output}")
+        return
+
+    flaw_uuids = list(flaw_to_components.keys())
+    console.print(f"Fetching details for {len(flaw_uuids)} unique flaws...", style="dim")
+
+    flaws = {}
+    batch_size = 50
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+        batches = [flaw_uuids[i:i + batch_size] for i in range(0, len(flaw_uuids), batch_size)]
+        futures = {ex.submit(get_flaws_batch, base_url, batch): i for i, batch in enumerate(batches)}
+        for f in concurrent.futures.as_completed(futures):
+            flaws.update(f.result())
+
+    affect_details = []
+    for a in all_affects:
+        flaw = flaws.get(a["flaw"])
+        if not flaw:
+            continue
+        affect_details.append({
+            "cve_id": flaw.get("cve_id") or flaw["uuid"][:12],
+            "impact": flaw.get("impact") or a.get("impact") or "",
+            "cvss": get_rh_cvss(flaw),
+            "title": flaw.get("title", ""),
+            "component": a["ps_component"],
+            "affectedness": a.get("affectedness", ""),
+            "resolution": a.get("resolution", "") or "(none)",
+            "workflow_state": flaw.get("workflow_state", ""),
+        })
+
+    seen = set()
+    deduped = []
+    for a in affect_details:
+        key = (a["cve_id"], a["component"])
+        if key not in seen:
+            seen.add(key)
+            deduped.append(a)
+
+    impact_order = {"CRITICAL": 0, "IMPORTANT": 1, "MODERATE": 2, "LOW": 3, "": 4}
+    deduped.sort(key=lambda a: (impact_order.get(a["impact"], 5), a["cve_id"]))
+
+    cve_groups = defaultdict(list)
+    cve_info = {}
+    for a in deduped:
+        cve_groups[a["cve_id"]].append(a)
+        if a["cve_id"] not in cve_info:
+            cve_info[a["cve_id"]] = a
+
+    console.print(f"\n  {len(cve_groups)} unique CVEs, {len(deduped)} component-affects", style="bold")
+
+    if output_json:
+        result = {
+            "product": product,
+            "version": product_version,
+            "module": module,
+            "components_scanned": len(components),
+            "cve_count": len(cve_groups),
+            "affect_count": len(deduped),
+            "cves": [
+                {
+                    "cve_id": cve_id,
+                    "impact": cve_info[cve_id]["impact"],
+                    "cvss": cve_info[cve_id]["cvss"],
+                    "title": cve_info[cve_id]["title"],
+                    "resolution": cve_info[cve_id]["resolution"],
+                    "workflow_state": cve_info[cve_id]["workflow_state"],
+                    "components": sorted(set(a["component"] for a in affects)),
+                }
+                for cve_id, affects in sorted(cve_groups.items())
+            ],
+        }
+        if output:
+            with open(output, "w") as f:
+                json.dump(result, f, indent=2)
+            console.print(f"JSON report written to {output}")
+        else:
+            click.echo(json.dumps(result, indent=2))
+        return
+
+    lines = []
+    lines.append(f"# Unresolved CVEs Report\n")
+    lines.append(f"**Product:** {product}:{product_version}")
+    lines.append(f"**Module:** {module}")
+    lines.append(f"**Components scanned:** {len(components)}")
+    lines.append(f"**Unresolved CVEs found:** {len(cve_groups)}")
+    lines.append(f"**Total component-affects:** {len(deduped)}")
+    if cache_hits:
+        lines.append(f"**Cache:** {cache_hits} hits, {cache_misses} misses")
+    lines.append("")
+
+    by_impact = defaultdict(list)
+    for cve_id in cve_groups:
+        info = cve_info[cve_id]
+        by_impact[info["impact"]].append(cve_id)
+
+    for imp in ["CRITICAL", "IMPORTANT", "MODERATE", "LOW", ""]:
+        if imp not in by_impact:
+            continue
+        label = imp or "UNSET"
+        cves = by_impact[imp]
+        lines.append(f"## {label} ({len(cves)})\n")
+        lines.append("| CVE | CVSS | Component(s) | Resolution | Status | Title |")
+        lines.append("|-----|------|-------------|------------|--------|-------|")
+        for cve_id in sorted(cves):
+            info = cve_info[cve_id]
+            comps = sorted(set(a["component"] for a in cve_groups[cve_id]))
+            cvss_str = f"{info['cvss']:.1f}" if info["cvss"] is not None else "N/A"
+            title = (info["title"] or "")[:80]
+            lines.append(f"| {cve_id} | {cvss_str} | {', '.join(comps)} | {info['resolution']} | {info['workflow_state']} | {title} |")
+        lines.append("")
+
+    report = "\n".join(lines)
+    if output:
+        with open(output, "w") as f:
+            f.write(report)
+        console.print(f"Report written to {output}")
+    else:
+        click.echo(report)
+
+
 @main.command("relationships")
 @click.option("--limit", type=int, default=100, help="Maximum results")
 @click.option("--json", "output_json", is_flag=True, help="Output as JSON")

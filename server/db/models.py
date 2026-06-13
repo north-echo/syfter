@@ -38,6 +38,8 @@ class Product(Base):
     cpe_product: Mapped[Optional[str]] = mapped_column(String(255))
     purl_namespace: Mapped[str] = mapped_column(String(100), default="redhat")
     description: Mapped[Optional[str]] = mapped_column(Text)
+    ps_update_stream: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, index=True)
+    ps_module: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     # Relationships
