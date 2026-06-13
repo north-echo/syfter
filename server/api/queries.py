@@ -268,7 +268,7 @@ def list_all_packages(
     query = (
         db.query(
             Package.name, Package.version, Package.release, Package.arch,
-            Package.source_image, Package.layer_id
+            Package.source_rpm, Package.source_image, Package.layer_id
         )
         .join(Product, Package.product_id == Product.id)
         .filter(Product.name == product_name, Product.version == product_version)
@@ -283,10 +283,11 @@ def list_all_packages(
             "version": version,
             "release": release,
             "arch": arch,
+            "source_rpm": source_rpm,
             "source_image": source_image,
             "layer_id": layer_id,
         }
-        for name, version, release, arch, source_image, layer_id in query.all()
+        for name, version, release, arch, source_rpm, source_image, layer_id in query.all()
     ]
 
 

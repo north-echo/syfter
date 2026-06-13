@@ -160,6 +160,8 @@ async def upload_scan(
     source_path: str = Form(...),
     source_type: str = Form("directory"),
     syft_version: Optional[str] = Form(None),
+    ps_update_stream: Optional[str] = Form(None),
+    ps_module: Optional[str] = Form(None),
     original_sbom: UploadFile = File(..., description="Original syft-json SBOM (gzip compressed)"),
     modified_sbom: UploadFile = File(..., description="Modified syft-json SBOM (gzip compressed)"),
     packages_json: UploadFile = File(..., description="Package index JSON (gzip compressed)"),
@@ -190,10 +192,19 @@ async def upload_scan(
             name=product_name,
             version=product_version,
             cpe_product=product_name,
+            ps_update_stream=ps_update_stream,
+            ps_module=ps_module,
         )
         db.add(product)
         db.commit()
         db.refresh(product)
+    else:
+        if ps_update_stream and product.ps_update_stream != ps_update_stream:
+            product.ps_update_stream = ps_update_stream
+        if ps_module and product.ps_module != ps_module:
+            product.ps_module = ps_module
+        if db.is_modified(product):
+            db.commit()
     logger.info(f"Product resolved: id={product.id}")
 
     # Delete existing scan for this product (replace behavior)

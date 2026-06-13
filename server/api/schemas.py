@@ -51,6 +51,8 @@ class ProductCreate(BaseModel):
     cpe_product: Optional[str] = Field(default=None, description="CPE product string")
     purl_namespace: str = Field(default="redhat", description="PURL namespace")
     description: Optional[str] = Field(default=None, description="Product description")
+    ps_update_stream: Optional[str] = Field(default=None, description="OSIDB ps_update_stream (e.g., rhel-9.6.z)")
+    ps_module: Optional[str] = Field(default=None, description="OSIDB ps_module (e.g., rhel-9)")
 
 
 class ProductResponse(BaseModel):
@@ -64,11 +66,13 @@ class ProductResponse(BaseModel):
     cpe_product: Optional[str]
     purl_namespace: str
     description: Optional[str]
+    ps_update_stream: Optional[str] = None
+    ps_module: Optional[str] = None
     created_at: datetime
     scan_count: int = 0
     total_packages: int = 0
     total_files: int = 0
-    source_type: Optional[str] = None  # Type of scan: directory, container, archive, etc.
+    source_type: Optional[str] = None
 
     class Config:
         from_attributes = True
