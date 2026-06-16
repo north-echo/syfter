@@ -2,10 +2,12 @@
 Scan API endpoints.
 """
 
+import gc
 import gzip
 import io
 import json
 import logging
+import threading
 import time
 from typing import List, Optional
 
@@ -85,6 +87,119 @@ def _generate_storage_key(product_name: str, product_version: str, scan_id: int,
     return f"{product_name}/{product_version}/{scan_id}/{suffix}"
 
 
+def _insert_dependencies_background(scan_id, product_id, dep_compressed, packages_by_key, db_url):
+    """Insert dependencies in a background thread with its own DB connection."""
+    from ..db.session import get_session_factory
+    SessionLocal = get_session_factory()
+    db = SessionLocal()
+
+    is_postgres = "postgresql" in db_url
+    raw_conn = None
+    dep_count = 0
+
+    try:
+        db.execute(
+            Scan.__table__.update().where(Scan.id == scan_id).values(deps_status="processing")
+        )
+        db.commit()
+
+        engine = db.get_bind()
+        raw_conn = engine.raw_connection()
+        DEP_BATCH = 10000
+        cursor = raw_conn.cursor()
+
+        if is_postgres:
+            from psycopg2.extras import execute_values
+            dep_sql = """INSERT INTO dependencies (package_id, scan_id, product_id, dependency_name, dependency_version, dependency_flags, dependency_type)
+                         VALUES %s"""
+        else:
+            dep_sql = """INSERT INTO dependencies (package_id, scan_id, product_id, dependency_name, dependency_version, dependency_flags, dependency_type)
+                         VALUES (?, ?, ?, ?, ?, ?, ?)"""
+
+        dep_json_bytes = _safe_gzip_decompress(dep_compressed)
+        del dep_compressed
+
+        dep_text = dep_json_bytes.decode("utf-8")
+        del dep_json_bytes
+        gc.collect()
+
+        decoder = json.JSONDecoder()
+        pos = 0
+        length = len(dep_text)
+
+        while pos < length and dep_text[pos] in ' \t\n\r':
+            pos += 1
+        if pos < length and dep_text[pos] == '[':
+            pos += 1
+
+        batch = []
+        while pos < length:
+            while pos < length and dep_text[pos] in ' \t\n\r,':
+                pos += 1
+            if pos >= length or dep_text[pos] == ']':
+                break
+
+            dep, end_pos = decoder.raw_decode(dep_text, pos)
+            pos = end_pos
+
+            pkg_key = (dep.get("package_name", ""), dep.get("package_version"), dep.get("package_arch"))
+            package_id = packages_by_key.get(pkg_key)
+            batch.append((
+                package_id,
+                scan_id,
+                product_id,
+                dep.get("dependency_name", ""),
+                dep.get("dependency_version"),
+                dep.get("dependency_flags"),
+                dep.get("dependency_type", "requires"),
+            ))
+            if len(batch) >= DEP_BATCH:
+                if is_postgres:
+                    execute_values(cursor, dep_sql, batch, page_size=1000)
+                else:
+                    cursor.executemany(dep_sql, batch)
+                raw_conn.commit()
+                dep_count += len(batch)
+                logger.info(f"  [bg] Dependencies batch: {dep_count} inserted so far (scan {scan_id})")
+                batch = []
+
+        if batch:
+            if is_postgres:
+                execute_values(cursor, dep_sql, batch, page_size=1000)
+            else:
+                cursor.executemany(dep_sql, batch)
+            raw_conn.commit()
+            dep_count += len(batch)
+
+        del dep_text
+        gc.collect()
+
+        db.execute(
+            Scan.__table__.update().where(Scan.id == scan_id).values(
+                deps_status="complete", deps_count=dep_count
+            )
+        )
+        db.commit()
+        logger.info(f"  [bg] Dependencies complete for scan {scan_id}: {dep_count} records")
+
+    except Exception as e:
+        logger.exception(f"  [bg] Failed to insert dependencies for scan {scan_id}: {e}")
+        try:
+            db.execute(
+                Scan.__table__.update().where(Scan.id == scan_id).values(deps_status="failed")
+            )
+            db.commit()
+        except Exception:
+            pass
+    finally:
+        if raw_conn is not None:
+            try:
+                raw_conn.close()
+            except Exception:
+                pass
+        db.close()
+
+
 @router.get("/", response_model=List[ScanResponse])
 def list_scans(
     product_name: Optional[str] = None,
@@ -118,6 +233,8 @@ def list_scans(
             file_count=scan.file_count,
             original_size_bytes=scan.original_size_bytes,
             modified_size_bytes=scan.modified_size_bytes,
+            deps_status=scan.deps_status,
+            deps_count=scan.deps_count,
         )
         for scan, pname, pversion in results
     ]
@@ -150,6 +267,8 @@ def get_scan(scan_id: int, db: Session = Depends(get_db)):
         file_count=scan.file_count,
         original_size_bytes=scan.original_size_bytes,
         modified_size_bytes=scan.modified_size_bytes,
+        deps_status=scan.deps_status,
+        deps_count=scan.deps_count,
     )
 
 
@@ -299,7 +418,6 @@ async def upload_scan(
         # Free the JSON bytes immediately
         del packages_json_bytes
 
-        import gc
         gc.collect()
         logger.info(f"JSON parsed, memory cleaned up")
     except MemoryError:
@@ -475,7 +593,6 @@ async def upload_scan(
             # Free packages_list memory before COPY
             if not _dep_compressed:
                 del packages_list
-                import gc
                 gc.collect()
                 logger.info("Memory freed, starting COPY...")
 
@@ -536,87 +653,20 @@ async def upload_scan(
 
         logger.info(f"Files inserted in {time.time() - bulk_start:.1f}s")
 
-    # Insert dependencies -- stream-decompress to avoid holding full list in memory
+    # Insert dependencies in a background thread to avoid blocking the worker
     dep_count = 0
     if _dep_compressed:
-        logger.info("Streaming dependency inserts...")
-        dep_start = time.time()
-        DEP_BATCH = 10000
-        cursor = raw_conn.cursor()
+        scan.deps_status = "pending"
+        db.commit()
 
-        if is_postgres:
-            from psycopg2.extras import execute_values
-            dep_sql = """INSERT INTO dependencies (package_id, scan_id, product_id, dependency_name, dependency_version, dependency_flags, dependency_type)
-                         VALUES %s"""
-        else:
-            dep_sql = """INSERT INTO dependencies (package_id, scan_id, product_id, dependency_name, dependency_version, dependency_flags, dependency_type)
-                         VALUES (?, ?, ?, ?, ?, ?, ?)"""
-
-        try:
-            dep_json_bytes = _safe_gzip_decompress(_dep_compressed)
-            del _dep_compressed
-
-            dep_text = dep_json_bytes.decode("utf-8")
-            del dep_json_bytes
-            import gc
-            gc.collect()
-
-            # Stream-parse JSON array one object at a time via raw_decode().
-            # Avoids json.loads() which materializes 1M+ dicts (~3GB) at once.
-            decoder = json.JSONDecoder()
-            pos = 0
-            length = len(dep_text)
-
-            while pos < length and dep_text[pos] in ' \t\n\r':
-                pos += 1
-            if pos < length and dep_text[pos] == '[':
-                pos += 1
-
-            batch = []
-            while pos < length:
-                while pos < length and dep_text[pos] in ' \t\n\r,':
-                    pos += 1
-                if pos >= length or dep_text[pos] == ']':
-                    break
-
-                dep, end_pos = decoder.raw_decode(dep_text, pos)
-                pos = end_pos
-
-                pkg_key = (dep.get("package_name", ""), dep.get("package_version"), dep.get("package_arch"))
-                package_id = packages_by_key.get(pkg_key)
-                batch.append((
-                    package_id,
-                    scan.id,
-                    product.id,
-                    dep.get("dependency_name", ""),
-                    dep.get("dependency_version"),
-                    dep.get("dependency_flags"),
-                    dep.get("dependency_type", "requires"),
-                ))
-                if len(batch) >= DEP_BATCH:
-                    if is_postgres:
-                        execute_values(cursor, dep_sql, batch, page_size=1000)
-                    else:
-                        cursor.executemany(dep_sql, batch)
-                    raw_conn.commit()
-                    dep_count += len(batch)
-                    logger.info(f"  Dependencies batch: {dep_count} inserted so far")
-                    batch = []
-
-            if batch:
-                if is_postgres:
-                    execute_values(cursor, dep_sql, batch, page_size=1000)
-                else:
-                    cursor.executemany(dep_sql, batch)
-                raw_conn.commit()
-                dep_count += len(batch)
-
-            del dep_text
-            gc.collect()
-        except Exception as e:
-            logger.warning(f"Failed to process dependencies: {e}")
-
-        logger.info(f"Dependencies inserted: {dep_count} in {time.time() - dep_start:.1f}s")
+        t = threading.Thread(
+            target=_insert_dependencies_background,
+            args=(scan.id, product.id, _dep_compressed, packages_by_key, str(db.bind.url)),
+            daemon=True,
+            name=f"deps-{scan.id}",
+        )
+        t.start()
+        logger.info(f"Background dependency insertion started for scan {scan.id}")
 
     # Process image layers (container scans)
     if image_layers_json is not None:
@@ -719,6 +769,8 @@ async def upload_scan(
         file_count=scan.file_count,
         original_size_bytes=scan.original_size_bytes,
         modified_size_bytes=scan.modified_size_bytes,
+        deps_status=scan.deps_status,
+        deps_count=scan.deps_count,
     )
 
 

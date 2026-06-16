@@ -116,6 +116,8 @@ class ScanResponse(BaseModel):
     file_count: int
     original_size_bytes: int
     modified_size_bytes: int
+    deps_status: Optional[str] = None
+    deps_count: int = 0
 
     class Config:
         from_attributes = True

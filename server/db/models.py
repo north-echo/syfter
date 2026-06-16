@@ -111,6 +111,10 @@ class Scan(Base):
     original_size_bytes: Mapped[int] = mapped_column(Integer, default=0)
     modified_size_bytes: Mapped[int] = mapped_column(Integer, default=0)
 
+    # Background dependency processing status
+    deps_status: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    deps_count: Mapped[int] = mapped_column(Integer, default=0)
+
     # Relationships
     product: Mapped[Optional["Product"]] = relationship(back_populates="scans")
     system: Mapped[Optional["System"]] = relationship(back_populates="scans")
