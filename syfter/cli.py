@@ -711,6 +711,53 @@ def frequency(ctx, name, product, product_version, limit, output_json):
         sys.exit(1)
 
 
+@main.command("import")
+@click.argument("file_path", type=click.Path(exists=True))
+@click.option("-p", "--product", required=True, help="Product name")
+@click.option("-v", "--version", "product_version", required=True, help="Product version")
+@click.option("--description", help="Description for this SBOM")
+@click.option("--source-type", default="sbom", help="Source type (default: sbom)")
+@click.option("--json", "output_json", is_flag=True, help="Output response as JSON")
+@click.pass_context
+def import_sbom(ctx, file_path, product, product_version, description, source_type, output_json):
+    """Import an SBOM file (SPDX, CycloneDX, or syft-json).
+
+    Auto-detects format and indexes all packages. The original SBOM is
+    stored as-is in object storage.
+
+    Example: syfter import customer-sbom.spdx.json -p acme-app -v 2.1
+    """
+    if ctx.obj["local_mode"]:
+        console.print("[red]Error: import requires server mode[/red]")
+        sys.exit(1)
+
+    from .client import SyfterClient, APIError
+    import httpx
+
+    try:
+        with SyfterClient(ctx.obj["server_url"]) as client:
+            result = client.import_sbom(
+                file_path=file_path,
+                product_name=product,
+                product_version=product_version,
+                source_type=source_type,
+                description=description,
+            )
+            if output_json:
+                click.echo(json.dumps(result, indent=2))
+                return
+            console.print(f"[green]Imported {result['package_count']} packages[/green]")
+            console.print(f"  Format:  {result['sbom_format']}")
+            console.print(f"  Product: {result['product_name']}-{result['product_version']}")
+            console.print(f"  Scan ID: {result['id']}")
+    except httpx.ConnectError:
+        console.print(f"[red]Error: Cannot connect to server at {ctx.obj['server_url']}[/red]")
+        sys.exit(1)
+    except APIError as e:
+        console.print(f"[red]Import failed: {e}[/red]")
+        sys.exit(1)
+
+
 def _get_format_extension(output_format: str) -> str:
     """Get the file extension for a given format."""
     extensions = {

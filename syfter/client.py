@@ -723,6 +723,32 @@ class SyfterClient:
         )
         return self._handle_response(response)
 
+    def import_sbom(
+        self,
+        file_path: str,
+        product_name: str,
+        product_version: str,
+        source_type: str = "sbom",
+        description: Optional[str] = None,
+    ) -> dict:
+        """Import an SBOM file (SPDX, CycloneDX, or syft-json)."""
+        with open(file_path, "rb") as f:
+            files = {"sbom": (os.path.basename(file_path), f)}
+            data = {
+                "product_name": product_name,
+                "product_version": product_version,
+                "source_type": source_type,
+            }
+            if description:
+                data["description"] = description
+            response = self.client.post(
+                self._url("/scans/import"),
+                data=data,
+                files=files,
+                timeout=300.0,
+            )
+        return self._handle_response(response)
+
     # ========================================================================
     # System operations (infrastructure mode)
     # ========================================================================

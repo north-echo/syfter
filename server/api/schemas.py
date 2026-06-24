@@ -123,6 +123,27 @@ class ScanResponse(BaseModel):
         from_attributes = True
 
 
+class ImportResponse(BaseModel):
+    """Schema for SBOM import response."""
+
+    id: int
+    product_id: int
+    product_name: str
+    product_version: str
+    source_path: str
+    source_type: str
+    scan_timestamp: datetime
+    syft_version: Optional[str]
+    package_count: int
+    file_count: int
+    original_size_bytes: int
+    modified_size_bytes: int
+    sbom_format: str = Field(description="Detected SBOM format (spdx, cyclonedx, syft-json)")
+
+    class Config:
+        from_attributes = True
+
+
 class ScanUploadResponse(BaseModel):
     """Response with presigned URLs for scan upload."""
 
