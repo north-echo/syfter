@@ -9,7 +9,7 @@ from sqlalchemy import collate, text
 from sqlalchemy.orm import Session
 
 from ..db import get_db, Product, Scan, System, Package, File, ImageLayer, Dependency, ComponentRelationship
-from .schemas import PackageResponse, FileResponse, StatsResponse, DependencyResponse, ComponentRelationshipResponse
+from .schemas import PackageResponse, PackageFrequencyResponse, FileResponse, StatsResponse, DependencyResponse, ComponentRelationshipResponse
 from ..config import get_config
 
 router = APIRouter()
@@ -134,6 +134,51 @@ def search_packages(
             source_image=pkg.source_image,
         )
         for pkg, pname, pversion in results
+    ]
+
+
+@router.get("/packages/frequency", response_model=List[PackageFrequencyResponse])
+def package_frequency(
+    name: str = Query(..., description="Package name (exact match or % wildcard)"),
+    product_name: Optional[str] = Query(default=None, description="Filter by product name (use % as wildcard)"),
+    product_version: Optional[str] = Query(default=None, description="Filter by product version (use % as wildcard)"),
+    limit: int = Query(default=100, le=1000, description="Maximum versions to return"),
+    db: Session = Depends(get_db),
+):
+    """Count how many SBOMs contain each version of a package.
+
+    Returns versions sorted by frequency (most common first), with the list
+    of product names that contain each version.
+    """
+    from sqlalchemy import func
+
+    query = (
+        db.query(
+            Package.version,
+            func.count(func.distinct(Product.id)).label("sbom_count"),
+            func.array_agg(func.distinct(Product.name)).label("products"),
+        )
+        .join(Product, Package.product_id == Product.id)
+    )
+
+    query = _apply_like_filter(query, Package.name, name)
+    query = _apply_like_filter(query, Product.name, product_name)
+    query = _apply_like_filter(query, Product.version, product_version)
+
+    results = (
+        query.group_by(Package.version)
+        .order_by(func.count(func.distinct(Product.id)).desc())
+        .limit(limit)
+        .all()
+    )
+
+    return [
+        PackageFrequencyResponse(
+            version=version,
+            sbom_count=count,
+            products=sorted(prods),
+        )
+        for version, count, prods in results
     ]
 
 

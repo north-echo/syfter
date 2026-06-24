@@ -301,6 +301,17 @@ class ComponentRelationshipResponse(BaseModel):
         from_attributes = True
 
 
+class PackageFrequencyResponse(BaseModel):
+    """Schema for package version frequency across SBOMs."""
+
+    version: str
+    sbom_count: int = Field(description="Number of SBOMs containing this version")
+    products: List[str] = Field(description="Product names containing this version")
+
+    class Config:
+        from_attributes = True
+
+
 class RemoteScanCreate(BaseModel):
     """Schema for creating a server-side remote scan job."""
 

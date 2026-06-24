@@ -657,6 +657,60 @@ def _query_server(ctx, name, pkg_version, file_path, digest, product, product_ve
         sys.exit(1)
 
 
+@main.command("frequency")
+@click.option("-n", "--name", required=True, help="Package name (exact match or %% wildcard)")
+@click.option("-p", "--product", help="Filter by product name (%% wildcard)")
+@click.option("-v", "--version", "product_version", help="Filter by product version (%% wildcard)")
+@click.option("--limit", type=int, default=100, help="Maximum versions to return")
+@click.option("--json", "output_json", is_flag=True, help="Output as JSON")
+@click.pass_context
+def frequency(ctx, name, product, product_version, limit, output_json):
+    """Show version frequency for a package across SBOMs.
+
+    Counts how many SBOMs contain each version of a package, sorted by
+    frequency. Useful for identifying the most common versions in use.
+    """
+    if ctx.obj["local_mode"]:
+        console.print("[red]Error: frequency requires server mode[/red]")
+        sys.exit(1)
+
+    from .client import SyfterClient, APIError
+    import httpx
+
+    try:
+        with SyfterClient(ctx.obj["server_url"]) as client:
+            results = client.package_frequency(
+                name=name, product_name=product,
+                product_version=product_version, limit=limit,
+            )
+            if output_json:
+                click.echo(json.dumps(results, indent=2))
+                return
+            if not results:
+                console.print("[yellow]No packages found[/yellow]")
+                return
+            table = Table(title=f"Version Frequency: {name}", box=box.SIMPLE)
+            table.add_column("Version", style="cyan")
+            table.add_column("SBOMs", style="green", justify="right")
+            table.add_column("Products", style="magenta")
+            for row in results:
+                products_str = ", ".join(row["products"][:5])
+                if len(row["products"]) > 5:
+                    products_str += f" (+{len(row['products']) - 5} more)"
+                table.add_row(
+                    row["version"] or "(empty)",
+                    str(row["sbom_count"]),
+                    products_str,
+                )
+            console.print(table)
+    except httpx.ConnectError:
+        console.print(f"[red]Error: Cannot connect to server at {ctx.obj['server_url']}[/red]")
+        sys.exit(1)
+    except APIError as e:
+        console.print(f"[red]Frequency query failed: {e}[/red]")
+        sys.exit(1)
+
+
 def _get_format_extension(output_format: str) -> str:
     """Get the file extension for a given format."""
     extensions = {
