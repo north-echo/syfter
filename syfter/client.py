@@ -619,6 +619,22 @@ class SyfterClient:
         response = self.client.get(self._url("/query/packages"), params=params)
         return self._handle_response(response)
 
+    def package_frequency(
+        self,
+        name: str,
+        product_name: Optional[str] = None,
+        product_version: Optional[str] = None,
+        limit: int = 100,
+    ) -> list:
+        """Get version frequency for a package across SBOMs."""
+        params = {"name": name, "limit": limit}
+        if product_name:
+            params["product_name"] = product_name
+        if product_version:
+            params["product_version"] = product_version
+        response = self.client.get(self._url("/query/packages/frequency"), params=params)
+        return self._handle_response(response)
+
     def search_files(
         self,
         path: Optional[str] = None,
