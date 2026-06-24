@@ -74,8 +74,8 @@ class SystemFileResponse(BaseModel):
 def search_packages(
     name: Optional[str] = Query(default=None, description="Package name pattern (use % as wildcard)"),
     pkg_version: Optional[str] = Query(default=None, description="Package version pattern (use % as wildcard)"),
-    product_name: Optional[str] = Query(default=None, description="Filter by product name"),
-    product_version: Optional[str] = Query(default=None, description="Filter by product version"),
+    product_name: Optional[str] = Query(default=None, description="Filter by product name (use % as wildcard)"),
+    product_version: Optional[str] = Query(default=None, description="Filter by product version (use % as wildcard)"),
     layer_type: Optional[str] = Query(default=None, description="Filter by layer type: 'base' or 'app'"),
     limit: int = Query(default=100, le=1000, description="Maximum results"),
     offset: int = Query(default=0, description="Offset for pagination"),
@@ -89,10 +89,8 @@ def search_packages(
 
     if product_name or product_version:
         inner = inner.join(Product, Package.product_id == Product.id)
-        if product_name:
-            inner = inner.filter(Product.name == product_name)
-        if product_version:
-            inner = inner.filter(Product.version == product_version)
+        inner = _apply_like_filter(inner, Product.name, product_name)
+        inner = _apply_like_filter(inner, Product.version, product_version)
 
     if layer_type:
         inner = inner.join(
@@ -143,8 +141,8 @@ def search_packages(
 def search_files(
     path: Optional[str] = Query(default=None, description="File path pattern (use % as wildcard)"),
     digest: Optional[str] = Query(default=None, description="File digest (exact match)"),
-    product_name: Optional[str] = Query(default=None, description="Filter by product name"),
-    product_version: Optional[str] = Query(default=None, description="Filter by product version"),
+    product_name: Optional[str] = Query(default=None, description="Filter by product name (use % as wildcard)"),
+    product_version: Optional[str] = Query(default=None, description="Filter by product version (use % as wildcard)"),
     limit: int = Query(default=100, le=1000, description="Maximum results"),
     offset: int = Query(default=0, description="Offset for pagination"),
     db: Session = Depends(get_db),
@@ -154,10 +152,8 @@ def search_files(
 
     if product_name or product_version:
         inner = inner.join(Product, File.product_id == Product.id)
-        if product_name:
-            inner = inner.filter(Product.name == product_name)
-        if product_version:
-            inner = inner.filter(Product.version == product_version)
+        inner = _apply_like_filter(inner, Product.name, product_name)
+        inner = _apply_like_filter(inner, Product.version, product_version)
 
     inner = _apply_like_filter(inner, File.path, path)
     if digest:
@@ -325,8 +321,8 @@ def search_dependencies(
     package_name: Optional[str] = Query(default=None, description="Package name (exact or % wildcard)"),
     dependency_name: Optional[str] = Query(default=None, description="Dependency name (exact or % wildcard)"),
     dependency_type: Optional[str] = Query(default=None, description="'requires' or 'provides'"),
-    product_name: Optional[str] = Query(default=None, description="Filter by product name"),
-    product_version: Optional[str] = Query(default=None, description="Filter by product version"),
+    product_name: Optional[str] = Query(default=None, description="Filter by product name (use % as wildcard)"),
+    product_version: Optional[str] = Query(default=None, description="Filter by product version (use % as wildcard)"),
     limit: int = Query(default=100, le=1000, description="Maximum results"),
     offset: int = Query(default=0, description="Offset for pagination"),
     db: Session = Depends(get_db),
@@ -350,10 +346,8 @@ def search_dependencies(
         query = _apply_like_filter(query, Dependency.dependency_name, dependency_name)
     if dependency_type:
         query = query.filter(Dependency.dependency_type == dependency_type)
-    if product_name:
-        query = query.filter(Product.name == product_name)
-    if product_version:
-        query = query.filter(Product.version == product_version)
+    query = _apply_like_filter(query, Product.name, product_name)
+    query = _apply_like_filter(query, Product.version, product_version)
 
     results = query.order_by(Dependency.id).offset(offset).limit(limit).all()
 
@@ -377,8 +371,8 @@ def search_dependencies(
 
 @router.get("/components", response_model=List[ComponentRelationshipResponse])
 def search_components(
-    product_name: Optional[str] = Query(default=None, description="Parent product name"),
-    component_name: Optional[str] = Query(default=None, description="Component product name"),
+    product_name: Optional[str] = Query(default=None, description="Parent product name (use % as wildcard)"),
+    component_name: Optional[str] = Query(default=None, description="Component product name (use % as wildcard)"),
     limit: int = Query(default=100, le=1000, description="Maximum results"),
     offset: int = Query(default=0, description="Offset for pagination"),
     db: Session = Depends(get_db),
@@ -399,10 +393,8 @@ def search_components(
         .join(ComponentProduct, ComponentRelationship.component_product_id == ComponentProduct.id)
     )
 
-    if product_name:
-        query = query.filter(ParentProduct.name == product_name)
-    if component_name:
-        query = query.filter(ComponentProduct.name == component_name)
+    query = _apply_like_filter(query, ParentProduct.name, product_name)
+    query = _apply_like_filter(query, ComponentProduct.name, component_name)
 
     results = query.offset(offset).limit(limit).all()
 
