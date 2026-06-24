@@ -20,9 +20,11 @@ from ..storage import get_storage
 from .queries import invalidate_stats_cache
 from .schemas import (
     ScanResponse,
+    ImportResponse,
     ScanMetadata,
     PackageCreate,
 )
+from ..sbom_formats import convert_sbom, SBOMFormat
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -771,6 +773,179 @@ async def upload_scan(
         modified_size_bytes=scan.modified_size_bytes,
         deps_status=scan.deps_status,
         deps_count=scan.deps_count,
+    )
+
+
+@router.post("/import", response_model=ImportResponse, status_code=201)
+async def import_sbom(
+    product_name: str = Form(...),
+    product_version: str = Form(...),
+    source_type: str = Form("sbom"),
+    description: Optional[str] = Form(None),
+    sbom: UploadFile = File(..., description="SBOM file (SPDX, CycloneDX, or syft-json; gzip or plain JSON)"),
+    db: Session = Depends(get_db),
+):
+    """
+    Import an SBOM in any supported format.
+
+    Auto-detects SPDX 2.x, CycloneDX 1.x, or syft-json format. Stores the
+    original SBOM in object storage and indexes all packages in the database.
+    Accepts both gzip-compressed and plain JSON uploads.
+    """
+    start_time = time.time()
+    logger.info(f"Starting SBOM import for {product_name}-{product_version}")
+
+    raw_data = await sbom.read()
+    if not raw_data:
+        raise HTTPException(status_code=400, detail="Empty SBOM file")
+
+    is_gzip = len(raw_data) >= 2 and raw_data[:2] == b"\x1f\x8b"
+    if is_gzip:
+        try:
+            json_bytes = _safe_gzip_decompress(raw_data)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Failed to decompress gzip: {e}")
+    else:
+        json_bytes = raw_data
+
+    try:
+        sbom_dict = json.loads(json_bytes.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}")
+
+    del json_bytes
+    gc.collect()
+
+    try:
+        detected_format, packages_list = convert_sbom(sbom_dict)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if not packages_list:
+        raise HTTPException(status_code=400, detail=f"SBOM ({detected_format.value}) contained no packages")
+
+    logger.info(f"Detected {detected_format.value} format, {len(packages_list)} packages extracted")
+
+    storage = get_storage()
+
+    product = (
+        db.query(Product)
+        .filter(Product.name == product_name, Product.version == product_version)
+        .first()
+    )
+    if not product:
+        product = Product(
+            name=product_name,
+            version=product_version,
+            cpe_product=product_name,
+        )
+        db.add(product)
+        db.commit()
+        db.refresh(product)
+    logger.info(f"Product resolved: id={product.id}")
+
+    existing_scan = db.query(Scan).filter(Scan.product_id == product.id).first()
+    if existing_scan:
+        logger.info(f"Deleting existing scan {existing_scan.id}")
+        try:
+            storage.delete(existing_scan.original_sbom_key)
+            storage.delete(existing_scan.modified_sbom_key)
+        except Exception:
+            pass
+        connection = db.connection()
+        raw_conn = connection.connection.dbapi_connection
+        is_postgres = 'psycopg' in type(raw_conn).__module__ or 'postgresql' in str(db.bind.url)
+        param = '%s' if is_postgres else '?'
+        cursor = raw_conn.cursor()
+        for table in ["dependencies", "files", "packages", "image_layers", "attestations", "scans"]:
+            col = "id" if table == "scans" else "scan_id"
+            cursor.execute(f"DELETE FROM {table} WHERE {col} = {param}", (existing_scan.id,))
+            raw_conn.commit()
+        db.expire_all()
+
+    # Store original SBOM (compress if not already gzip)
+    sbom_gz = raw_data if is_gzip else gzip.compress(raw_data)
+    del raw_data
+
+    scan = Scan(
+        product_id=product.id,
+        source_path=description or f"{detected_format.value} import",
+        source_type=source_type,
+        syft_version=f"import-{detected_format.value}",
+        original_sbom_key="",
+        modified_sbom_key="",
+        package_count=len(packages_list),
+        file_count=0,
+        original_size_bytes=len(sbom_gz),
+        modified_size_bytes=0,
+    )
+    db.add(scan)
+    db.commit()
+    db.refresh(scan)
+
+    original_key = _generate_storage_key(product_name, product_version, scan.id, "original.json.gz")
+    storage.put(original_key, sbom_gz)
+    del sbom_gz
+
+    scan.original_sbom_key = original_key
+    scan.modified_sbom_key = original_key
+
+    # Normalize CPE lists to JSON strings for DB storage
+    for pkg in packages_list:
+        cpes = pkg.get("cpes")
+        if isinstance(cpes, list):
+            pkg["cpes"] = json.dumps(cpes)
+
+    # Bulk insert packages
+    connection = db.connection()
+    raw_conn = connection.connection.dbapi_connection
+    is_postgres = 'psycopg' in type(raw_conn).__module__ or 'postgresql' in str(db.bind.url)
+
+    package_tuples = [
+        (
+            scan.id, product.id,
+            pkg.get("name", ""), pkg.get("version"), pkg.get("release"),
+            pkg.get("arch"), pkg.get("epoch"), pkg.get("source_rpm"),
+            pkg.get("license"), pkg.get("purl"), pkg.get("cpes"),
+            pkg.get("layer_id"), pkg.get("layer_index"), pkg.get("source_image"),
+        )
+        for pkg in packages_list
+    ]
+    del packages_list
+
+    _pkg_cols = "scan_id, product_id, name, version, release, arch, epoch, source_rpm, license, purl, cpes, layer_id, layer_index, source_image"
+
+    cursor = raw_conn.cursor()
+    if is_postgres:
+        from psycopg2.extras import execute_values
+        execute_values(cursor, f"INSERT INTO packages ({_pkg_cols}) VALUES %s", package_tuples, page_size=1000)
+    else:
+        cursor.executemany(f"INSERT INTO packages ({_pkg_cols}) VALUES ({','.join('?' * 14)})", package_tuples)
+    raw_conn.commit()
+    del package_tuples
+
+    db.expire_all()
+    db.commit()
+
+    elapsed = time.time() - start_time
+    logger.info(f"Import complete: {scan.package_count} packages indexed in {elapsed:.1f}s")
+
+    invalidate_stats_cache()
+
+    return ImportResponse(
+        id=scan.id,
+        product_id=scan.product_id,
+        product_name=product.name,
+        product_version=product.version,
+        source_path=scan.source_path,
+        source_type=scan.source_type,
+        scan_timestamp=scan.scan_timestamp,
+        syft_version=scan.syft_version,
+        package_count=scan.package_count,
+        file_count=0,
+        original_size_bytes=scan.original_size_bytes,
+        modified_size_bytes=0,
+        sbom_format=detected_format.value,
     )
 
 
