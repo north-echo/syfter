@@ -22,13 +22,19 @@ const ProductDetailView = {
 
       try {
         const data = await API.productPackages(name, version, limit, offset);
-        const pkgs = data.packages || data;
+        const pkgs = Array.isArray(data) ? data : (data.packages || []);
+        const hasMore = pkgs.length === limit;
+        const page = Math.floor(offset / limit) + 1;
 
         const header = el.querySelector(".page-header p");
-        if (header) header.textContent = `${App.fmt(data.total || pkgs.length)} packages`;
+        if (header) {
+          const showing = offset + pkgs.length;
+          header.textContent = hasMore ? `Showing ${App.fmt(offset + 1)}-${App.fmt(showing)} packages` : `${App.fmt(showing)} packages`;
+        }
 
         if (!pkgs.length) {
           tableEl.innerHTML = `<div class="empty-state"><p>No packages found</p></div>`;
+          pagEl.innerHTML = "";
           return;
         }
 
@@ -47,13 +53,10 @@ const ProductDetailView = {
             </tbody>
           </table>`;
 
-        const total = data.total || pkgs.length;
-        const page = Math.floor(offset / limit) + 1;
-        const pages = Math.ceil(total / limit);
         pagEl.innerHTML = `
           <button class="btn-ghost btn-sm" ${offset === 0 ? "disabled" : ""} id="pkg-prev">Prev</button>
-          <span>Page ${page} of ${pages}</span>
-          <button class="btn-ghost btn-sm" ${offset + limit >= total ? "disabled" : ""} id="pkg-next">Next</button>`;
+          <span>Page ${page}</span>
+          <button class="btn-ghost btn-sm" ${!hasMore ? "disabled" : ""} id="pkg-next">Next</button>`;
 
         document.getElementById("pkg-prev")?.addEventListener("click", () => { offset = Math.max(0, offset - limit); load(); });
         document.getElementById("pkg-next")?.addEventListener("click", () => { offset += limit; load(); });
