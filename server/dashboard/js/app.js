@@ -69,11 +69,11 @@ const App = {
 };
 
 // Register views
-App.register("/", StatsView.render);
-App.register("/products", ProductsView.render);
-App.register("/products/:name/:version", ProductDetailView.render);
-App.register("/packages", PackagesView.render);
-App.register("/import", ImportView.render);
-App.register("/frequency", FrequencyView.render);
+App.register("/", (el) => StatsView.render(el));
+App.register("/products", (el) => ProductsView.render(el));
+App.register("/products/:name/:version", (el, p) => ProductDetailView.render(el, p));
+App.register("/packages", (el) => PackagesView.render(el));
+App.register("/import", (el) => ImportView.render(el));
+App.register("/frequency", (el) => FrequencyView.render(el));
 
 App.start();
