@@ -65,8 +65,8 @@ async def auth_middleware(request: Request, call_next):
         request.state.api_key_id = None
         return await call_next(request)
 
-    # Skip auth for exempt paths
-    if request.url.path in SKIP_AUTH_PATHS:
+    # Skip auth for exempt paths and dashboard static files
+    if request.url.path in SKIP_AUTH_PATHS or request.url.path.startswith("/dashboard"):
         return await call_next(request)
 
     # Read API key from header

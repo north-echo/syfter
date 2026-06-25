@@ -3,11 +3,13 @@ Main FastAPI application — Syfter Enterprise.
 """
 
 import logging
+import pathlib
 import time
 
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from .api import api_router
 from .auth import auth_middleware, router as admin_router, seed_admin_key
@@ -93,6 +95,11 @@ async def log_requests(request: Request, call_next):
 # Include API router
 app.include_router(api_router, prefix="/api/v1")
 app.include_router(admin_router, prefix="/api/v1")
+
+# Serve dashboard static files
+_dashboard_dir = pathlib.Path(__file__).parent / "dashboard"
+if _dashboard_dir.is_dir():
+    app.mount("/dashboard", StaticFiles(directory=str(_dashboard_dir), html=True), name="dashboard")
 
 
 @app.on_event("startup")
