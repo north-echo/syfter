@@ -46,7 +46,7 @@ def list_products(
         )
         SELECT p.id, p.name, p.version, p.vendor, p.cpe_vendor,
                p.cpe_product, p.purl_namespace, p.description, p.created_at,
-               p.ps_update_stream, p.ps_module, p.source_type,
+               p.ps_update_stream, p.ps_module,
                COALESCE(sc.cnt, 0) AS scan_count,
                COALESCE(pc.cnt, 0) AS total_packages,
                COALESCE(fc.cnt, 0) AS total_files,
