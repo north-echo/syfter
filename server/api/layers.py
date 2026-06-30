@@ -375,6 +375,8 @@ def enrich_layers(
     enriched = 0
     base_images_found = set()
     skipped = 0
+    packages_updated = 0
+    layers_updated = 0
 
     # Sort candidates by chain length (shortest first) for efficient prefix matching
     candidates = sorted(product_chains.items(), key=lambda x: len(x[1]["layers"]))
@@ -413,26 +415,45 @@ def enrich_layers(
         scan_id = chain_data["scan_id"]
 
         # Update ImageLayer records
-        db.execute(
+        layer_result = db.execute(
             update(ImageLayer)
             .where(ImageLayer.scan_id == scan_id, ImageLayer.layer_id.in_(base_layers))
             .values(is_base=True, source_image=best_base)
         )
 
-        # Update Package records whose layer_id matches a base layer
-        db.execute(
+        # Update Package records -- only if packages have layer_id set
+        # (SPDX-sourced packages have layer_id=NULL; for those, use
+        # ImageLayer.is_base at query time instead)
+        pkg_result = db.execute(
             update(Package)
             .where(Package.scan_id == scan_id, Package.layer_id.in_(base_layers))
             .values(source_image=best_base)
         )
 
+        # If no packages matched by layer_id, try matching by scan_id + layer_index
+        # for packages that have layer_index set
+        if pkg_result.rowcount == 0:
+            # Fall back: mark packages whose layer_index falls within the base range
+            pkg_result = db.execute(
+                update(Package)
+                .where(
+                    Package.scan_id == scan_id,
+                    Package.layer_index.isnot(None),
+                    Package.layer_index < best_base_len,
+                )
+                .values(source_image=best_base)
+            )
+
         enriched += 1
+        packages_updated += pkg_result.rowcount
+        layers_updated += layer_result.rowcount
 
     db.commit()
 
     logger.info(
         f"Layer enrichment: {enriched} products enriched, "
-        f"{len(base_images_found)} base images found, {skipped} skipped"
+        f"{len(base_images_found)} base images found, {skipped} skipped, "
+        f"{layers_updated} layer rows updated, {packages_updated} package rows updated"
     )
 
     return {
@@ -440,4 +461,6 @@ def enrich_layers(
         "base_images_found": sorted(base_images_found),
         "skipped": skipped,
         "total_products": len(product_chains),
+        "layers_updated": layers_updated,
+        "packages_updated": packages_updated,
     }

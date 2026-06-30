@@ -5,7 +5,7 @@ Product API endpoints.
 import json
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
@@ -17,34 +17,55 @@ router = APIRouter()
 
 @router.get("/", response_model=List[ProductResponse])
 def list_products(
+    response: Response,
     limit: int = Query(default=100, le=1000, description="Maximum results"),
     offset: int = Query(default=0, description="Offset for pagination"),
+    name: Optional[str] = Query(default=None, description="Filter by product name (case-insensitive substring, or use % as wildcard)"),
     db: Session = Depends(get_db),
 ):
     """List all products with scan, package, and file counts."""
-    # Raw SQL with CTE + LATERAL: PostgreSQL's planner chooses Hash Join
-    # (full 11M-row seq scan) for ORM subqueries. LATERAL forces Nested
-    # Loop with index scan per product (233ms vs 15.8s).
-    sql = text("""
-        WITH page AS (
+    name_filter = ""
+    params = {"limit": limit, "offset": offset}
+    if name:
+        if "%" in name:
+            params["name"] = name.lower()
+        else:
+            params["name"] = f"%{name.lower()}%"
+        name_filter = "WHERE LOWER(name) LIKE :name"
+
+    sql = text(f"""
+        WITH filtered AS (
             SELECT id FROM products
+            {name_filter}
             ORDER BY name, version
             LIMIT :limit OFFSET :offset
+        ),
+        total AS (
+            SELECT count(*) AS cnt FROM products
+            {name_filter}
         )
         SELECT p.id, p.name, p.version, p.vendor, p.cpe_vendor,
                p.cpe_product, p.purl_namespace, p.description, p.created_at,
+               p.ps_update_stream, p.ps_module, p.source_type,
                COALESCE(sc.cnt, 0) AS scan_count,
                COALESCE(pc.cnt, 0) AS total_packages,
-               COALESCE(fc.cnt, 0) AS total_files
+               COALESCE(fc.cnt, 0) AS total_files,
+               total.cnt AS _total
         FROM products p
-        JOIN page ON p.id = page.id
+        JOIN filtered ON p.id = filtered.id
+        CROSS JOIN total
         LEFT JOIN LATERAL (SELECT count(*) cnt FROM scans WHERE product_id = p.id) sc ON true
         LEFT JOIN LATERAL (SELECT count(*) cnt FROM packages WHERE product_id = p.id) pc ON true
         LEFT JOIN LATERAL (SELECT count(*) cnt FROM files WHERE product_id = p.id) fc ON true
         ORDER BY p.name, p.version
     """)
 
-    results = db.execute(sql, {"limit": limit, "offset": offset}).fetchall()
+    results = db.execute(sql, params).fetchall()
+
+    if results:
+        response.headers["X-Total-Count"] = str(results[0]._total)
+    else:
+        response.headers["X-Total-Count"] = "0"
 
     return [
         ProductResponse(

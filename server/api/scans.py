@@ -29,6 +29,8 @@ from ..sbom_formats import convert_sbom, SBOMFormat
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+_dep_semaphore = threading.Semaphore(1)
+
 # Maximum decompressed size to prevent zip bombs (4GB)
 _MAX_DECOMPRESSED_SIZE = 4 * 1024 * 1024 * 1024  # 4GB for large distros like RHEL
 
@@ -118,63 +120,67 @@ def _insert_dependencies_background(scan_id, product_id, dep_compressed, package
             dep_sql = """INSERT INTO dependencies (package_id, scan_id, product_id, dependency_name, dependency_version, dependency_flags, dependency_type)
                          VALUES (?, ?, ?, ?, ?, ?, ?)"""
 
-        dep_json_bytes = _safe_gzip_decompress(dep_compressed)
-        del dep_compressed
+        _dep_semaphore.acquire()
+        try:
+            dep_json_bytes = _safe_gzip_decompress(dep_compressed)
+            del dep_compressed
 
-        dep_text = dep_json_bytes.decode("utf-8")
-        del dep_json_bytes
-        gc.collect()
+            dep_text = dep_json_bytes.decode("utf-8")
+            del dep_json_bytes
+            gc.collect()
 
-        decoder = json.JSONDecoder()
-        pos = 0
-        length = len(dep_text)
+            decoder = json.JSONDecoder()
+            pos = 0
+            length = len(dep_text)
 
-        while pos < length and dep_text[pos] in ' \t\n\r':
-            pos += 1
-        if pos < length and dep_text[pos] == '[':
-            pos += 1
-
-        batch = []
-        while pos < length:
-            while pos < length and dep_text[pos] in ' \t\n\r,':
+            while pos < length and dep_text[pos] in ' \t\n\r':
                 pos += 1
-            if pos >= length or dep_text[pos] == ']':
-                break
+            if pos < length and dep_text[pos] == '[':
+                pos += 1
 
-            dep, end_pos = decoder.raw_decode(dep_text, pos)
-            pos = end_pos
+            batch = []
+            while pos < length:
+                while pos < length and dep_text[pos] in ' \t\n\r,':
+                    pos += 1
+                if pos >= length or dep_text[pos] == ']':
+                    break
 
-            pkg_key = (dep.get("package_name", ""), dep.get("package_version"), dep.get("package_arch"))
-            package_id = packages_by_key.get(pkg_key)
-            batch.append((
-                package_id,
-                scan_id,
-                product_id,
-                dep.get("dependency_name", ""),
-                dep.get("dependency_version"),
-                dep.get("dependency_flags"),
-                dep.get("dependency_type", "requires"),
-            ))
-            if len(batch) >= DEP_BATCH:
+                dep, end_pos = decoder.raw_decode(dep_text, pos)
+                pos = end_pos
+
+                pkg_key = (dep.get("package_name", ""), dep.get("package_version"), dep.get("package_arch"))
+                package_id = packages_by_key.get(pkg_key)
+                batch.append((
+                    package_id,
+                    scan_id,
+                    product_id,
+                    dep.get("dependency_name", ""),
+                    dep.get("dependency_version"),
+                    dep.get("dependency_flags"),
+                    dep.get("dependency_type", "requires"),
+                ))
+                if len(batch) >= DEP_BATCH:
+                    if is_postgres:
+                        execute_values(cursor, dep_sql, batch, page_size=1000)
+                    else:
+                        cursor.executemany(dep_sql, batch)
+                    raw_conn.commit()
+                    dep_count += len(batch)
+                    logger.info(f"  [bg] Dependencies batch: {dep_count} inserted so far (scan {scan_id})")
+                    batch = []
+
+            if batch:
                 if is_postgres:
                     execute_values(cursor, dep_sql, batch, page_size=1000)
                 else:
                     cursor.executemany(dep_sql, batch)
                 raw_conn.commit()
                 dep_count += len(batch)
-                logger.info(f"  [bg] Dependencies batch: {dep_count} inserted so far (scan {scan_id})")
-                batch = []
 
-        if batch:
-            if is_postgres:
-                execute_values(cursor, dep_sql, batch, page_size=1000)
-            else:
-                cursor.executemany(dep_sql, batch)
-            raw_conn.commit()
-            dep_count += len(batch)
-
-        del dep_text
-        gc.collect()
+            del dep_text
+            gc.collect()
+        finally:
+            _dep_semaphore.release()
 
         db.execute(
             Scan.__table__.update().where(Scan.id == scan_id).values(

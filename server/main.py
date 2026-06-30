@@ -1,5 +1,5 @@
 """
-Main FastAPI application — Syfter Enterprise.
+Main FastAPI application — Syfter.
 """
 
 import logging
@@ -12,10 +12,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from .api import api_router
-from .auth import auth_middleware, router as admin_router, seed_admin_key
+from .auth import auth_middleware, router as admin_router, access_log_router, seed_admin_key
 from .config import get_config, ServerConfig
 from .db import init_db
-from .middleware import cache_middleware, rate_limit_middleware
+from .middleware import cache_middleware, rate_limit_middleware, access_log_middleware
 
 # Configure logging
 logging.basicConfig(
@@ -30,8 +30,8 @@ MAX_UPLOAD_SIZE = 1024 * 1024 * 1024  # 1GB
 __version__ = "1.0.0"
 
 app = FastAPI(
-    title="Syfter Enterprise API",
-    description="Enterprise SBOM platform for RPM and container image scanning at scale",
+    title="Syfter API",
+    description="SBOM platform for RPM and container image scanning at scale",
     version=__version__,
 )
 
@@ -45,7 +45,7 @@ app.add_middleware(
 )
 
 
-# Middleware execution order: log -> auth -> rate_limit -> cache -> endpoint
+# Middleware execution order: access_log -> log -> auth -> rate_limit -> cache -> endpoint
 # Starlette runs middleware in reverse registration order (last registered = outermost).
 
 @app.middleware("http")
@@ -92,9 +92,16 @@ async def log_requests(request: Request, call_next):
         raise
 
 
+@app.middleware("http")
+async def access_log_middleware_handler(request: Request, call_next):
+    """Audit trail: log API requests to database."""
+    return await access_log_middleware(request, call_next)
+
+
 # Include API router
 app.include_router(api_router, prefix="/api/v1")
 app.include_router(admin_router, prefix="/api/v1")
+app.include_router(access_log_router, prefix="/api/v1")
 
 # Serve dashboard static files
 _dashboard_dir = pathlib.Path(__file__).parent / "dashboard"
@@ -122,7 +129,7 @@ def root():
     """Root endpoint with API info."""
     config = get_config()
     return {
-        "name": "Syfter Enterprise API",
+        "name": "Syfter API",
         "version": __version__,
         "database": config.database.type,
         "storage": config.storage.type,

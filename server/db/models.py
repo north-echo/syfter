@@ -332,3 +332,24 @@ class ApiKey(Base):
         Index("idx_apikey_hash", "key_hash"),
         Index("idx_apikey_team", "team_name"),
     )
+
+
+class AccessLog(Base):
+    """API access log for audit trail."""
+
+    __tablename__ = "access_log"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    method: Mapped[str] = mapped_column(String(10), nullable=False)
+    path: Mapped[str] = mapped_column(String(500), nullable=False)
+    status_code: Mapped[int] = mapped_column(Integer, nullable=False)
+    response_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    key_prefix: Mapped[Optional[str]] = mapped_column(String(8))
+    team_name: Mapped[Optional[str]] = mapped_column(String(255))
+    client_ip: Mapped[Optional[str]] = mapped_column(String(45))
+
+    __table_args__ = (
+        Index("idx_access_log_timestamp", "timestamp"),
+        Index("idx_access_log_team", "team_name"),
+    )
