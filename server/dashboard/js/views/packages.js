@@ -6,7 +6,7 @@ const PackagesView = {
         <p>Search across all products</p>
       </div>
       <div class="search-bar">
-        <input type="search" id="pkg-search" placeholder="Package name (use % as wildcard)">
+        <input type="search" id="pkg-search" placeholder="Package name (auto-adds % suffix for prefix match)">
         <input type="search" id="pkg-product" placeholder="Product filter (optional)" style="max-width:200px">
         <button class="btn-primary" id="pkg-go">Search</button>
       </div>
@@ -19,15 +19,16 @@ const PackagesView = {
     const btn = document.getElementById("pkg-go");
 
     const doSearch = async () => {
-      const name = search.value.trim();
+      let name = search.value.trim();
       if (!name) return;
+      if (!name.includes("%") && !name.includes("_")) name += "%";
       const resultsEl = document.getElementById("pkg-results");
       resultsEl.innerHTML = App.skeleton(6);
 
       try {
         const params = { name };
         const pf = product.value.trim();
-        if (pf) params.product_name = pf;
+        if (pf) params.product_name = pf + "%";
 
         const data = await API.searchPackages(params);
         const pkgs = Array.isArray(data) ? data : (data.packages || []);
@@ -56,7 +57,9 @@ const PackagesView = {
           <div style="margin-top:8px;font-size:13px;color:var(--text-muted)">${pkgs.length} results (max 100)</div>`;
       } catch (e) {
         if (e.message !== "__auth__") {
-          resultsEl.innerHTML = `<div class="alert alert-error">${e.message}</div>`;
+          const isTimeout = e.message.includes("timeout") || e.message.includes("canceling statement");
+          const hint = isTimeout ? " Try a more specific prefix (e.g., openssl instead of open)." : "";
+          resultsEl.innerHTML = `<div class="alert alert-error">${e.message}${hint}</div>`;
         }
       }
     };

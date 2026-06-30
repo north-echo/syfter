@@ -10,7 +10,7 @@ const ProductsView = {
       </div>
       <div class="search-bar">
         <input type="search" id="product-filter" placeholder="Filter products..." value="${s.filter}">
-        <span class="hint">Case-insensitive substring match</span>
+        <span class="hint">Case-insensitive substring match (searches all products)</span>
       </div>
       <div class="card">
         <div class="table-wrap" id="products-table">${App.skeleton(8)}</div>
@@ -38,15 +38,9 @@ const ProductsView = {
     if (!tableEl) return;
 
     try {
-      const params = { limit: s.limit, offset: s.offset };
-      if (s.filter) params.name = `%${s.filter}%`;
-      const data = await API.products(s.limit, s.offset);
-
-      let products = data.products || data;
-      if (s.filter) {
-        const f = s.filter.toLowerCase();
-        products = products.filter(p => p.name.toLowerCase().includes(f) || (p.version || "").toLowerCase().includes(f));
-      }
+      const result = await API.products(s.limit, s.offset, s.filter || null);
+      const products = result.data;
+      const total = result.total;
 
       if (!products.length) {
         tableEl.innerHTML = `<div class="empty-state"><p>No products found</p></div>`;
@@ -68,7 +62,6 @@ const ProductsView = {
           </tbody>
         </table>`;
 
-      const total = data.total || products.length;
       const page = Math.floor(s.offset / s.limit) + 1;
       const pages = Math.ceil(total / s.limit);
       pagEl.innerHTML = `

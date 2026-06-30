@@ -3,10 +3,12 @@ API key authentication middleware and key management.
 """
 
 import hashlib
+import json
 import logging
 import os
 import secrets
 import time
+import urllib.request
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -15,13 +17,17 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from .db import get_db, ApiKey
+from .db import get_db, ApiKey, AccessLog
 
 logger = logging.getLogger(__name__)
 
 # In-memory TTL cache for API key lookups
 _key_cache: dict[str, tuple[float, dict]] = {}
 _cache_ttl: int = 60  # seconds
+
+# JWKS cache for OIDC Bearer token validation
+_jwks_cache: dict = {}
+_jwks_cache_time: float = 0
 
 
 def _hash_key(api_key: str) -> str:
@@ -50,6 +56,71 @@ def _cache_set(key_hash: str, data: dict):
     _key_cache[key_hash] = (time.time(), data)
 
 
+def _get_jwks(issuer_url: str, cache_ttl: int) -> dict:
+    """Fetch and cache JWKS from the OIDC issuer."""
+    global _jwks_cache, _jwks_cache_time
+    if _jwks_cache and (time.time() - _jwks_cache_time) < cache_ttl:
+        return _jwks_cache
+
+    try:
+        oidc_url = f"{issuer_url.rstrip('/')}/.well-known/openid-configuration"
+        with urllib.request.urlopen(oidc_url, timeout=10) as resp:
+            oidc_config = json.loads(resp.read())
+        jwks_uri = oidc_config["jwks_uri"]
+        with urllib.request.urlopen(jwks_uri, timeout=10) as resp:
+            _jwks_cache = json.loads(resp.read())
+        _jwks_cache_time = time.time()
+        return _jwks_cache
+    except Exception as e:
+        logger.warning(f"Failed to fetch JWKS from {issuer_url}: {e}")
+        return _jwks_cache  # return stale cache if available
+
+
+def _validate_bearer_token(token: str) -> Optional[dict]:
+    """Validate a Bearer JWT token against the configured OIDC issuer.
+
+    Returns decoded claims dict on success, None on failure.
+    """
+    from .config import get_config
+    config = get_config()
+
+    if not config.oidc_issuer_url:
+        return None
+
+    try:
+        import jwt
+        from jwt import PyJWKClient
+
+        jwks = _get_jwks(config.oidc_issuer_url, config.oidc_jwks_cache_ttl)
+        if not jwks:
+            return None
+
+        jwk_client = PyJWKClient.__new__(PyJWKClient)
+        jwk_client.jwk_set = jwt.PyJWKSet.from_dict(jwks)
+
+        header = jwt.get_unverified_header(token)
+        key = None
+        for jwk in jwk_client.jwk_set.keys:
+            if jwk.key_id == header.get("kid"):
+                key = jwk.key
+                break
+
+        if not key:
+            return None
+
+        claims = jwt.decode(
+            token,
+            key,
+            algorithms=["RS256"],
+            audience=config.oidc_client_id,
+            issuer=config.oidc_issuer_url,
+        )
+        return claims
+    except Exception as e:
+        logger.debug(f"Bearer token validation failed: {e}")
+        return None
+
+
 # Paths that skip authentication
 SKIP_AUTH_PATHS = {"/", "/health", "/docs", "/openapi.json", "/redoc"}
 
@@ -71,10 +142,25 @@ async def auth_middleware(request: Request, call_next):
 
     # Read API key from header
     api_key = request.headers.get("X-API-Key")
+
+    # Check for Bearer token if no API key
     if not api_key:
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:]
+            claims = _validate_bearer_token(token)
+            if claims:
+                username = claims.get("preferred_username") or claims.get("sub", "unknown")
+                request.state.team_name = username
+                request.state.api_key_id = None
+                return await call_next(request)
+            return JSONResponse(
+                status_code=401,
+                content={"error": "Invalid or expired Bearer token"},
+            )
         return JSONResponse(
             status_code=401,
-            content={"error": "Missing API key", "hint": "Set X-API-Key header"},
+            content={"error": "Missing API key or Bearer token", "hint": "Set X-API-Key header or Authorization: Bearer <token>"},
         )
 
     key_hash = _hash_key(api_key)
@@ -283,3 +369,68 @@ def revoke_api_key(
 
     # Invalidate cache
     _key_cache.clear()
+
+
+# --- Admin access log endpoints ---
+
+access_log_router = APIRouter(prefix="/admin/access-log", tags=["admin"])
+
+
+@access_log_router.get("/")
+def get_access_log(
+    request: Request,
+    limit: int = 100,
+    team: Optional[str] = None,
+    admin=Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Query recent API access log entries (admin only)."""
+    query = db.query(AccessLog).order_by(AccessLog.timestamp.desc())
+    if team:
+        query = query.filter(AccessLog.team_name == team)
+    rows = query.limit(limit).all()
+    return [
+        {
+            "id": r.id,
+            "timestamp": r.timestamp.isoformat() if r.timestamp else None,
+            "method": r.method,
+            "path": r.path,
+            "status_code": r.status_code,
+            "response_ms": r.response_ms,
+            "key_prefix": r.key_prefix,
+            "team_name": r.team_name,
+            "client_ip": r.client_ip,
+        }
+        for r in rows
+    ]
+
+
+@access_log_router.get("/summary")
+def get_access_log_summary(
+    request: Request,
+    admin=Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Summarize access log by team (admin only)."""
+    from sqlalchemy import func
+
+    rows = (
+        db.query(
+            AccessLog.team_name,
+            func.count(AccessLog.id).label("request_count"),
+            func.avg(AccessLog.response_ms).label("avg_response_ms"),
+            func.max(AccessLog.timestamp).label("last_request"),
+        )
+        .group_by(AccessLog.team_name)
+        .order_by(func.count(AccessLog.id).desc())
+        .all()
+    )
+    return [
+        {
+            "team_name": r.team_name,
+            "request_count": r.request_count,
+            "avg_response_ms": round(r.avg_response_ms) if r.avg_response_ms else 0,
+            "last_request": r.last_request.isoformat() if r.last_request else None,
+        }
+        for r in rows
+    ]
