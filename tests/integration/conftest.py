@@ -65,9 +65,9 @@ def api(base_url, api_key) -> httpx.Client:
 @pytest.fixture(scope="session")
 def admin_api(base_url) -> httpx.Client:
     """httpx client with admin API key for admin-only endpoints."""
-    key = os.environ.get("SYFTER_ADMIN_API_KEY", os.environ.get("SYFTER_API_KEY"))
+    key = os.environ.get("SYFTER_ADMIN_API_KEY")
     if not key:
-        pytest.skip("SYFTER_ADMIN_API_KEY or SYFTER_API_KEY not set")
+        pytest.skip("SYFTER_ADMIN_API_KEY not set (Vault: testing/admin-key@apps)")
     client = httpx.Client(
         base_url=base_url,
         headers={"X-API-Key": key},

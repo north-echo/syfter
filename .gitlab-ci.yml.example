@@ -1,0 +1,82 @@
+# GitLab CI — Syfter integration tests (Vault-backed API key)
+#
+# Matches lightwell/lightwell-osidb and lightwell/syfter Vault patterns:
+#   https://gitlab.cee.redhat.com/lightwell/lightwell-osidb/-/blob/main/.gitlab-ci.yml
+#
+# Prerequisites:
+#   1. Vault secrets on mount `apps`, path lightwell/syfter/stage/testing:
+#        - api-key@apps   — team key for CI (field api-key)
+#        - admin-key@apps — cluster admin key for admin/auth tests (field admin-key)
+#   2. GitLab JWT auth role for this project (see VAULT_AUTH_ROLE below)
+#   3. Vault policy granting read on those paths to the role
+#
+# Store the Syfter *team* API key (not admin). Create once via POST /admin/keys/
+# with team_name gitlab-ci — see tests/integration/README.md
+
+stages:
+  - test
+
+variables:
+  VAULT_AUTH_PATH: gitlabcee
+  VAULT_SERVER_URL: https://vault.corp.redhat.com:8200
+  # Create/update in Vault for the GitLab project that runs this pipeline
+  VAULT_AUTH_ROLE: jwt-gitlabcee-lightwell-syfter-SOURCE-XXXXX
+  SYFTER_TEST_SERVER: "https://syfter-cli.stage.lightwell.redhat.com"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+default:
+  tags:
+    - itup-alm-x86
+  id_tokens:
+    VAULT_ID_TOKEN:
+      aud: https://vault.corp.redhat.com:8200
+
+# ---------------------------------------------------------------------------
+# Stage integration tests (API key from Vault — no OIDC)
+# ---------------------------------------------------------------------------
+
+integration-tests:stage:
+  stage: test
+  image: python:3.12-bookworm
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  secrets:
+    SYFTER_API_KEY_PATH:
+      vault: lightwell/syfter/stage/testing/api-key@apps
+    SYFTER_ADMIN_API_KEY_PATH:
+      vault: lightwell/syfter/stage/testing/admin-key@apps
+  before_script:
+    - pip install -e ".[all]"
+    # Vault secrets are injected as file paths (same pattern as lightwell/syfter deploy jobs)
+    - export SYFTER_API_KEY="$(tr -d '\n' < "${SYFTER_API_KEY_PATH}")"
+    - export SYFTER_ADMIN_API_KEY="$(tr -d '\n' < "${SYFTER_ADMIN_API_KEY_PATH}")"
+  script:
+    - curl -sf "${SYFTER_TEST_SERVER}/health"
+    - pytest tests/integration/ -m "integration and not auth" -v --tb=short
+  # Do not log keys; pytest reads SYFTER_API_KEY / SYFTER_ADMIN_API_KEY from the environment.
+
+# Admin/auth integration tests (key CRUD, access log). Runs on default branch only.
+integration-tests:stage:admin:
+  stage: test
+  image: python:3.12-bookworm
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  secrets:
+    SYFTER_ADMIN_API_KEY_PATH:
+      vault: lightwell/syfter/stage/testing/admin-key@apps
+  before_script:
+    - pip install -e ".[all]"
+    - export SYFTER_ADMIN_API_KEY="$(tr -d '\n' < "${SYFTER_ADMIN_API_KEY_PATH}")"
+  script:
+    - pytest tests/integration/ -m "integration and auth" -v --tb=short
+
+# Alternative: inject the secret value directly (no cat) — uncomment if preferred:
+#
+# integration-tests:stage:
+#   secrets:
+#     SYFTER_API_KEY:
+#       vault: lightwell/syfter/stage/testing/api-key@apps
+#       file: false
+#   script:
+#     - pytest tests/integration/ -m "integration and not auth" -v

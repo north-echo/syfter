@@ -128,6 +128,8 @@ class TestExportValidation:
 
 
 class TestAdminValidation:
+    pytestmark = pytest.mark.auth
+
     def test_create_key_empty_body(self, admin_api):
         resp = admin_api.post("/api/v1/admin/keys/", json={})
         assert resp.status_code == 422
