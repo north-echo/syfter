@@ -77,6 +77,8 @@ def list_products(
             cpe_product=row.cpe_product,
             purl_namespace=row.purl_namespace,
             description=row.description,
+            ps_update_stream=row.ps_update_stream,
+            ps_module=row.ps_module,
             created_at=row.created_at,
             scan_count=row.scan_count,
             total_packages=row.total_packages,
@@ -111,6 +113,8 @@ def get_product(product_name: str, product_version: str, db: Session = Depends(g
         cpe_product=product.cpe_product,
         purl_namespace=product.purl_namespace,
         description=product.description,
+        ps_update_stream=product.ps_update_stream,
+        ps_module=product.ps_module,
         created_at=product.created_at,
         scan_count=scan_count,
         total_packages=total_packages,
@@ -137,6 +141,8 @@ def create_product(product: ProductCreate, db: Session = Depends(get_db)):
         cpe_product=product.cpe_product or product.name,
         purl_namespace=product.purl_namespace,
         description=product.description,
+        ps_update_stream=product.ps_update_stream,
+        ps_module=product.ps_module,
     )
     db.add(db_product)
     db.commit()
@@ -151,6 +157,8 @@ def create_product(product: ProductCreate, db: Session = Depends(get_db)):
         cpe_product=db_product.cpe_product,
         purl_namespace=db_product.purl_namespace,
         description=db_product.description,
+        ps_update_stream=db_product.ps_update_stream,
+        ps_module=db_product.ps_module,
         created_at=db_product.created_at,
         scan_count=0,
         total_packages=0,

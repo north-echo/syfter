@@ -77,8 +77,8 @@ def search_packages(
     product_name: Optional[str] = Query(default=None, description="Filter by product name (use % as wildcard)"),
     product_version: Optional[str] = Query(default=None, description="Filter by product version (use % as wildcard)"),
     layer_type: Optional[str] = Query(default=None, description="Filter by layer type: 'base' or 'app'"),
-    limit: int = Query(default=100, le=1000, description="Maximum results"),
-    offset: int = Query(default=0, description="Offset for pagination"),
+    limit: int = Query(default=100, ge=0, le=1000, description="Maximum results"),
+    offset: int = Query(default=0, ge=0, description="Offset for pagination"),
     db: Session = Depends(get_db),
 ):
     """Search for packages across all products. Supports layer_type filter for container scans."""
@@ -142,7 +142,7 @@ def package_frequency(
     name: str = Query(..., description="Package name (exact match or % wildcard)"),
     product_name: Optional[str] = Query(default=None, description="Filter by product name (use % as wildcard)"),
     product_version: Optional[str] = Query(default=None, description="Filter by product version (use % as wildcard)"),
-    limit: int = Query(default=100, le=1000, description="Maximum versions to return"),
+    limit: int = Query(default=100, ge=0, le=1000, description="Maximum versions to return"),
     db: Session = Depends(get_db),
 ):
     """Count how many SBOMs contain each version of a package.
@@ -188,8 +188,8 @@ def search_files(
     digest: Optional[str] = Query(default=None, description="File digest (exact match)"),
     product_name: Optional[str] = Query(default=None, description="Filter by product name (use % as wildcard)"),
     product_version: Optional[str] = Query(default=None, description="Filter by product version (use % as wildcard)"),
-    limit: int = Query(default=100, le=1000, description="Maximum results"),
-    offset: int = Query(default=0, description="Offset for pagination"),
+    limit: int = Query(default=100, ge=0, le=1000, description="Maximum results"),
+    offset: int = Query(default=0, ge=0, description="Offset for pagination"),
     db: Session = Depends(get_db),
 ):
     """Search for files across all products."""
@@ -296,8 +296,8 @@ def get_stats(db: Session = Depends(get_db)):
 def list_all_packages(
     product_name: str,
     product_version: str,
-    limit: int = Query(default=10000, le=100000, description="Maximum results"),
-    offset: int = Query(default=0, description="Offset for pagination"),
+    limit: int = Query(default=10000, ge=0, le=100000, description="Maximum results"),
+    offset: int = Query(default=0, ge=0, description="Offset for pagination"),
     db: Session = Depends(get_db),
 ):
     """
@@ -336,8 +336,8 @@ def list_all_packages(
 def list_all_files(
     product_name: str,
     product_version: str,
-    limit: int = Query(default=10000, le=100000, description="Maximum results"),
-    offset: int = Query(default=0, description="Offset for pagination"),
+    limit: int = Query(default=10000, ge=0, le=100000, description="Maximum results"),
+    offset: int = Query(default=0, ge=0, description="Offset for pagination"),
     db: Session = Depends(get_db),
 ):
     """
@@ -368,8 +368,8 @@ def search_dependencies(
     dependency_type: Optional[str] = Query(default=None, description="'requires' or 'provides'"),
     product_name: Optional[str] = Query(default=None, description="Filter by product name (use % as wildcard)"),
     product_version: Optional[str] = Query(default=None, description="Filter by product version (use % as wildcard)"),
-    limit: int = Query(default=100, le=1000, description="Maximum results"),
-    offset: int = Query(default=0, description="Offset for pagination"),
+    limit: int = Query(default=100, ge=0, le=1000, description="Maximum results"),
+    offset: int = Query(default=0, ge=0, description="Offset for pagination"),
     db: Session = Depends(get_db),
 ):
     """Search dependency records (RPM requires/provides)."""
@@ -418,8 +418,8 @@ def search_dependencies(
 def search_components(
     product_name: Optional[str] = Query(default=None, description="Parent product name (use % as wildcard)"),
     component_name: Optional[str] = Query(default=None, description="Component product name (use % as wildcard)"),
-    limit: int = Query(default=100, le=1000, description="Maximum results"),
-    offset: int = Query(default=0, description="Offset for pagination"),
+    limit: int = Query(default=100, ge=0, le=1000, description="Maximum results"),
+    offset: int = Query(default=0, ge=0, description="Offset for pagination"),
     db: Session = Depends(get_db),
 ):
     """Search component relationships between products."""
@@ -542,7 +542,7 @@ def get_provenance(
 def trace_package(
     name: str = Query(..., description="Package name (exact match)"),
     pkg_version: Optional[str] = Query(default=None, description="Version pattern (% wildcard)"),
-    limit: int = Query(default=200, le=1000),
+    limit: int = Query(default=200, ge=0, le=1000),
     db: Session = Depends(get_db),
 ):
     """Trace a package across the full product stack (repos -> base images -> layered containers)."""
@@ -674,8 +674,8 @@ def search_system_packages(
     name: Optional[str] = Query(default=None, description="Package name pattern (use % as wildcard)"),
     hostname: Optional[str] = Query(default=None, description="Filter by hostname"),
     tag: Optional[str] = Query(default=None, description="Filter by system tag"),
-    limit: int = Query(default=100, le=1000, description="Maximum results"),
-    offset: int = Query(default=0, description="Offset for pagination"),
+    limit: int = Query(default=100, ge=0, le=1000, description="Maximum results"),
+    offset: int = Query(default=0, ge=0, description="Offset for pagination"),
     db: Session = Depends(get_db),
 ):
     """Search for packages across all systems."""
@@ -725,8 +725,8 @@ def search_system_files(
     digest: Optional[str] = Query(default=None, description="File digest (exact match)"),
     hostname: Optional[str] = Query(default=None, description="Filter by hostname"),
     tag: Optional[str] = Query(default=None, description="Filter by system tag"),
-    limit: int = Query(default=100, le=1000, description="Maximum results"),
-    offset: int = Query(default=0, description="Offset for pagination"),
+    limit: int = Query(default=100, ge=0, le=1000, description="Maximum results"),
+    offset: int = Query(default=0, ge=0, description="Offset for pagination"),
     db: Session = Depends(get_db),
 ):
     """Search for files across all systems."""
@@ -772,8 +772,8 @@ def search_system_files(
 @router.get("/systems/list/packages/{hostname}")
 def list_system_packages(
     hostname: str,
-    limit: int = Query(default=10000, le=100000, description="Maximum results"),
-    offset: int = Query(default=0, description="Offset for pagination"),
+    limit: int = Query(default=10000, ge=0, le=100000, description="Maximum results"),
+    offset: int = Query(default=0, ge=0, description="Offset for pagination"),
     db: Session = Depends(get_db),
 ):
     """
@@ -804,8 +804,8 @@ def list_system_packages(
 @router.get("/systems/list/files/{hostname}")
 def list_system_files(
     hostname: str,
-    limit: int = Query(default=10000, le=100000, description="Maximum results"),
-    offset: int = Query(default=0, description="Offset for pagination"),
+    limit: int = Query(default=10000, ge=0, le=100000, description="Maximum results"),
+    offset: int = Query(default=0, ge=0, description="Offset for pagination"),
     db: Session = Depends(get_db),
 ):
     """
