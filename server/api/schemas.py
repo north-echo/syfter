@@ -333,6 +333,87 @@ class PackageFrequencyResponse(BaseModel):
         from_attributes = True
 
 
+# VULCAN analysis schemas
+class VulcanAnalyzeRequest(BaseModel):
+    """Request to run a VULCAN CVE impact analysis."""
+
+    component: str = Field(..., description="RPM package name (e.g., 'openssl')")
+    ps_module: Optional[str] = Field(default=None, description="OSIDB ps_module (e.g., 'rhel-9')")
+    cve_id: Optional[str] = Field(default=None, description="CVE identifier for labeling")
+    impact: Optional[str] = Field(default=None, description="CRITICAL/IMPORTANT/MODERATE/LOW")
+
+
+class VulcanTrackerResponse(BaseModel):
+    """A deduplicated tracker recommendation."""
+
+    id: int
+    tracker_type: str
+    product_name: str
+    product_version: str
+    covers_count: int
+    covered_products: List[str]
+    package_version: Optional[str]
+    package_arch: Optional[str]
+    status: str
+
+    class Config:
+        from_attributes = True
+
+
+class VulcanAnalysisSummary(BaseModel):
+    """Summary counts for a VULCAN analysis."""
+
+    total_products: int
+    rhel_repos: int
+    base_images: int
+    layered_containers: int
+    app_layer_unique: int
+    recommended_trackers: int
+    dedup_ratio: str
+
+
+class VulcanAnalysisResponse(BaseModel):
+    """Full VULCAN analysis result."""
+
+    id: int
+    cve_id: Optional[str]
+    component: str
+    ps_module: Optional[str]
+    impact: Optional[str]
+    analyzed_at: datetime
+    status: str
+    resolved_at: Optional[datetime] = None
+    resolved_by: Optional[str] = None
+    summary: VulcanAnalysisSummary
+    trackers: List[VulcanTrackerResponse]
+
+    class Config:
+        from_attributes = True
+
+
+class VulcanAnalysisListItem(BaseModel):
+    """Brief analysis entry for list views."""
+
+    id: int
+    cve_id: Optional[str]
+    component: str
+    ps_module: Optional[str]
+    impact: Optional[str]
+    analyzed_at: datetime
+    status: str
+    total_products: int
+    recommended_trackers: int
+
+    class Config:
+        from_attributes = True
+
+
+class VulcanResolveRequest(BaseModel):
+    """Request to resolve a VULCAN analysis."""
+
+    resolved_by: str = Field(..., description="RHSA ID (e.g., 'RHSA-2026:1234')")
+
+
 class RemoteScanCreate(BaseModel):
     """Schema for creating a server-side remote scan job."""
 
