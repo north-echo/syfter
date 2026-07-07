@@ -185,10 +185,11 @@ def backfill_build_tool_relationships(
         .all()
     )
 
-    product_cache = {}
+    id_to_product = {}
+    name_to_ids = {}
     for p in db.query(Product.id, Product.name, Product.version).all():
-        product_cache[p.id] = (p.name, p.version)
-        product_cache[(p.name, p.version)] = p.id
+        id_to_product[p.id] = (p.name, p.version)
+        name_to_ids.setdefault(p.name, []).append((p.version, p.id))
 
     existing_rels = set()
     for cr in db.query(ComponentRelationship.parent_product_id, ComponentRelationship.component_product_id).all():
@@ -202,14 +203,21 @@ def backfill_build_tool_relationships(
     skipped_product_missing = 0
     errors = 0
 
-    for scan_id, sbom_key, product_id in container_scans:
+    total_scans = len(container_scans)
+    logger.info(f"Backfill: processing {total_scans} container scans")
+
+    for idx, (scan_id, sbom_key, product_id) in enumerate(container_scans):
+        if idx > 0 and idx % 500 == 0:
+            logger.info(f"Backfill: {idx}/{total_scans} scans processed, {created} relationships created")
         if not sbom_key:
             skipped_no_sbom += 1
             continue
 
         try:
             sbom = storage.get_json(sbom_key, compressed=True)
-        except Exception:
+        except Exception as e:
+            if errors < 5:
+                logger.warning(f"Backfill: error reading {sbom_key}: {e}")
             errors += 1
             continue
 
@@ -222,22 +230,16 @@ def backfill_build_tool_relationships(
             skipped_no_bases += 1
             continue
 
-        parent_name, parent_version = product_cache.get(product_id, (None, None))
-        if not parent_name:
+        if product_id not in id_to_product:
             errors += 1
             continue
 
         for base_name in bases:
-            # Try to find the base product -- match by name, pick latest version
-            base_product_id = None
-            for pid, (pname, pver) in product_cache.items():
-                if isinstance(pid, int) and pname == base_name:
-                    if base_product_id is None:
-                        base_product_id = pid
-                    else:
-                        existing_ver = product_cache.get(base_product_id, ("", ""))[1] if isinstance(base_product_id, int) else ""
-                        if pver > existing_ver:
-                            base_product_id = pid
+            candidates = name_to_ids.get(base_name, [])
+            if not candidates:
+                base_product_id = None
+            else:
+                base_product_id = max(candidates, key=lambda x: x[0])[1]
 
             if not base_product_id:
                 skipped_product_missing += 1
