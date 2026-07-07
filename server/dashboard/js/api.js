@@ -75,7 +75,9 @@ const API = {
       try { const b = await resp.json(); detail = b.detail || b.error || detail; } catch (_) {}
       throw new Error(detail);
     }
-    return resp.json();
+    const data = await resp.json();
+    data._headers = resp.headers;
+    return data;
   },
 
   async upload(path, formData) {
@@ -111,8 +113,8 @@ const API = {
 
   stats() { return this.request("/api/v1/query/stats"); },
 
-  products(limit = 50, offset = 0) {
-    return this.request("/api/v1/products/", { limit, offset });
+  products(limit = 50, offset = 0, name = null) {
+    return this.request("/api/v1/products/", { limit, offset, name });
   },
 
   product(name, version) {

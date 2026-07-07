@@ -39,8 +39,8 @@ const ProductsView = {
 
     try {
       const result = await API.products(s.limit, s.offset, s.filter || null);
-      const products = result.data;
-      const total = result.total;
+      const products = Array.isArray(result) ? result : [];
+      const total = parseInt(result._headers?.get("X-Total-Count") || products.length, 10);
 
       if (!products.length) {
         tableEl.innerHTML = `<div class="empty-state"><p>No products found</p></div>`;
