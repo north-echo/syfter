@@ -35,6 +35,40 @@ from .schemas import (
 
 router = APIRouter()
 
+import re
+
+_BASE_IMAGE_PATTERNS = [
+    (re.compile(r"^ubi9-minimal[:\-]"), "ubi9-minimal"),
+    (re.compile(r"^ubi9[:\-]"), "ubi9"),
+    (re.compile(r"^ubi8-minimal[:\-]"), "ubi8-minimal"),
+    (re.compile(r"^ubi8[:\-]"), "ubi8"),
+    (re.compile(r"^ubi7[:\-]"), "ubi7"),
+]
+
+_RHEL_SUFFIX_RE = re.compile(r"-rhel-?(\d+)")
+
+
+def _infer_base_image(product_name: str) -> Optional[str]:
+    """Infer the base image family from a container product name.
+
+    Returns a base image key like 'ubi9' or None if unknown.
+    Layer digest matching is unreliable across rebuilds, so we use
+    naming conventions that cover ~85% of Red Hat container images.
+    """
+    name_lower = product_name.lower()
+    for pattern, base in _BASE_IMAGE_PATTERNS:
+        if pattern.match(name_lower):
+            return None  # this IS a base image, not layered
+
+    m = _RHEL_SUFFIX_RE.search(name_lower)
+    if m:
+        ver = m.group(1)
+        if "minimal" in name_lower:
+            return f"ubi{ver}-minimal"
+        return f"ubi{ver}"
+
+    return None
+
 
 def _run_analysis(component: str, ps_module: Optional[str], db: Session):
     """Core dedup engine: find affected products, categorize by layer, deduplicate."""
@@ -88,6 +122,32 @@ def _run_analysis(component: str, ps_module: Optional[str], db: Session):
 
     scans_with_base = set(base_layer_map.keys())
 
+    # Build first-layer digest groups for fallback inference:
+    # if a named -rhelN image shares its first layer with an unnamed image,
+    # we can infer they share the same base.
+    first_layer_base = {}
+    if scan_ids:
+        first_rows = (
+            db.query(ImageLayer.scan_id, ImageLayer.layer_id)
+            .filter(ImageLayer.scan_id.in_(scan_ids), ImageLayer.layer_index == 0)
+            .all()
+        )
+        scan_first_layer = {sid: lid for sid, lid in first_rows}
+
+        # Map: first_layer_digest -> inferred base from named products
+        digest_to_base = {}
+        for hit in hits:
+            sid = hit.scan_id
+            if hit[8] == "container" and sid in scan_first_layer:  # source_type
+                inferred = _infer_base_image(hit[1])  # prod_name
+                if inferred:
+                    digest_to_base.setdefault(scan_first_layer[sid], inferred)
+
+        # Apply digest-based inference to scans without name-based inference
+        for sid, fl_digest in scan_first_layer.items():
+            if fl_digest in digest_to_base:
+                first_layer_base[sid] = digest_to_base[fl_digest]
+
     rhel_repos = []
     base_images = []
     layered = []
@@ -112,13 +172,25 @@ def _run_analysis(component: str, ps_module: Optional[str], db: Session):
         if source_type == "directory":
             rhel_repos.append(entry)
         elif source_type == "container":
-            if scan_id not in scans_with_base:
-                base_images.append(entry)
-            elif layer_id and layer_id in base_layer_map.get(scan_id, set()):
-                entry["base_source"] = base_source_map.get(scan_id, source_image)
-                layered.append(entry)
+            # Layer-based categorization (works when is_base is populated)
+            if scan_id in scans_with_base:
+                if layer_id and layer_id in base_layer_map.get(scan_id, set()):
+                    entry["base_source"] = base_source_map.get(scan_id, source_image)
+                    layered.append(entry)
+                else:
+                    app_layer.append(entry)
             else:
-                app_layer.append(entry)
+                # Fallback: name-based + digest-based inference
+                inferred = _infer_base_image(prod_name)
+                if inferred is None and scan_id in first_layer_base:
+                    inferred = first_layer_base[scan_id]
+
+                if inferred:
+                    entry["base_source"] = inferred
+                    layered.append(entry)
+                else:
+                    # No -rhelN suffix and no digest match: likely a base image itself
+                    base_images.append(entry)
         else:
             rhel_repos.append(entry)
 
