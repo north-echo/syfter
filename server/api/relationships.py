@@ -78,10 +78,10 @@ def create_relationship(
             detail=f"Component product {body.component_product_name}-{body.component_product_version} not found",
         )
 
-    if body.relationship_type not in ("layered", "maintained"):
+    if body.relationship_type not in ("layered", "maintained", "build_tool"):
         raise HTTPException(
             status_code=400,
-            detail="relationship_type must be 'layered' or 'maintained'",
+            detail="relationship_type must be 'layered', 'maintained', or 'build_tool'",
         )
 
     existing = (
