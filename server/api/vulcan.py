@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from ..db import (
     get_db,
+    ComponentRelationship,
     ImageLayer,
     Package,
     Product,
@@ -122,6 +123,26 @@ def _run_analysis(component: str, ps_module: Optional[str], db: Session):
 
     scans_with_base = set(base_layer_map.keys())
 
+    # Build build_tool relationship map: product_id -> base product name
+    container_product_ids = {h[0] for h in hits if h[8] == "container"}
+    build_tool_map = {}
+    if container_product_ids:
+        bt_rows = (
+            db.query(
+                ComponentRelationship.parent_product_id,
+                Product.name,
+                Product.version,
+            )
+            .join(Product, ComponentRelationship.component_product_id == Product.id)
+            .filter(
+                ComponentRelationship.parent_product_id.in_(container_product_ids),
+                ComponentRelationship.relationship_type == "build_tool",
+            )
+            .all()
+        )
+        for parent_id, comp_name, comp_version in bt_rows:
+            build_tool_map[parent_id] = f"{comp_name}:{comp_version}"
+
     # Build first-layer digest groups for fallback inference:
     # if a named -rhelN image shares its first layer with an unnamed image,
     # we can infer they share the same base.
@@ -134,16 +155,14 @@ def _run_analysis(component: str, ps_module: Optional[str], db: Session):
         )
         scan_first_layer = {sid: lid for sid, lid in first_rows}
 
-        # Map: first_layer_digest -> inferred base from named products
         digest_to_base = {}
         for hit in hits:
             sid = hit.scan_id
-            if hit[8] == "container" and sid in scan_first_layer:  # source_type
-                inferred = _infer_base_image(hit[1])  # prod_name
+            if hit[8] == "container" and sid in scan_first_layer:
+                inferred = _infer_base_image(hit[1])
                 if inferred:
                     digest_to_base.setdefault(scan_first_layer[sid], inferred)
 
-        # Apply digest-based inference to scans without name-based inference
         for sid, fl_digest in scan_first_layer.items():
             if fl_digest in digest_to_base:
                 first_layer_base[sid] = digest_to_base[fl_digest]
@@ -172,15 +191,19 @@ def _run_analysis(component: str, ps_module: Optional[str], db: Session):
         if source_type == "directory":
             rhel_repos.append(entry)
         elif source_type == "container":
-            # Layer-based categorization (works when is_base is populated)
-            if scan_id in scans_with_base:
+            # Priority 1: build_tool relationship (authoritative, from SPDX BUILD_TOOL_OF)
+            if prod_id in build_tool_map:
+                entry["base_source"] = build_tool_map[prod_id]
+                layered.append(entry)
+            # Priority 2: layer-based categorization (when is_base is populated)
+            elif scan_id in scans_with_base:
                 if layer_id and layer_id in base_layer_map.get(scan_id, set()):
                     entry["base_source"] = base_source_map.get(scan_id, source_image)
                     layered.append(entry)
                 else:
                     app_layer.append(entry)
             else:
-                # Fallback: name-based + digest-based inference
+                # Priority 3: name-based + digest-based inference
                 inferred = _infer_base_image(prod_name)
                 if inferred is None and scan_id in first_layer_base:
                     inferred = first_layer_base[scan_id]
@@ -189,7 +212,6 @@ def _run_analysis(component: str, ps_module: Optional[str], db: Session):
                     entry["base_source"] = inferred
                     layered.append(entry)
                 else:
-                    # No -rhelN suffix and no digest match: likely a base image itself
                     base_images.append(entry)
         else:
             rhel_repos.append(entry)

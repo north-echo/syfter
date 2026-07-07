@@ -18,7 +18,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, distinct, collate, update
 from sqlalchemy.orm import Session
 
-from ..db import get_db, Product, Scan, Package, ImageLayer
+from ..db import get_db, Product, Scan, Package, ImageLayer, ComponentRelationship
 
 logger = logging.getLogger(__name__)
 
@@ -466,4 +466,113 @@ def enrich_layers(
         "total_products": len(product_chains),
         "layers_updated": layers_updated,
         "packages_updated": packages_updated,
+    }
+
+
+import re
+
+_RHEL_SUFFIX_RE = re.compile(r"-rhel-?(\d+)")
+
+
+def _infer_base_name(product_name: str) -> Optional[str]:
+    """Infer base image family from product name. Returns None if unknown or IS a base image."""
+    name_lower = product_name.lower()
+    if name_lower.startswith(("ubi9", "ubi8", "ubi7", "ubi10")):
+        return None  # this IS a base image
+    m = _RHEL_SUFFIX_RE.search(name_lower)
+    if m:
+        ver = m.group(1)
+        if "minimal" in name_lower:
+            return f"ubi{ver}-minimal"
+        return f"ubi{ver}"
+    return None
+
+
+@router.get("/{product_name}/{product_version}/ancestry")
+def get_ancestry(
+    product_name: str,
+    product_version: str,
+    db: Session = Depends(get_db),
+):
+    """Get the full parent image ancestry chain for a container product.
+
+    Recursively follows build_tool relationships to walk the full image
+    heritage: layered-image -> base-image -> micro-image -> scratch.
+    Falls back to name-based inference when no build_tool relationship exists.
+    """
+    product = (
+        db.query(Product)
+        .filter(Product.name == product_name, Product.version == product_version)
+        .first()
+    )
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    ancestry = [{
+        "product_name": product.name,
+        "product_version": product.version,
+        "depth": 0,
+        "source": "self",
+    }]
+
+    visited = {product.id}
+    current_id = product.id
+    resolution_method = "none"
+    max_depth = 10
+
+    for depth in range(1, max_depth + 1):
+        rel = (
+            db.query(ComponentRelationship)
+            .filter(
+                ComponentRelationship.parent_product_id == current_id,
+                ComponentRelationship.relationship_type == "build_tool",
+            )
+            .first()
+        )
+
+        if rel and rel.component_product_id not in visited:
+            parent = db.query(Product).filter(Product.id == rel.component_product_id).first()
+            if parent:
+                visited.add(parent.id)
+                ancestry.append({
+                    "product_name": parent.name,
+                    "product_version": parent.version,
+                    "depth": depth,
+                    "source": "build_tool",
+                })
+                current_id = parent.id
+                resolution_method = "build_tool"
+                continue
+
+        # Fallback: name-based inference (one level only)
+        if depth == 1:
+            current_product = db.query(Product).filter(Product.id == current_id).first()
+            if current_product:
+                inferred = _infer_base_name(current_product.name)
+                if inferred:
+                    base = (
+                        db.query(Product)
+                        .filter(Product.name == inferred)
+                        .order_by(Product.version.desc())
+                        .first()
+                    )
+                    if base and base.id not in visited:
+                        visited.add(base.id)
+                        ancestry.append({
+                            "product_name": base.name,
+                            "product_version": base.version,
+                            "depth": depth,
+                            "source": "name_inference",
+                        })
+                        current_id = base.id
+                        resolution_method = "name_inference"
+                        continue
+        break
+
+    return {
+        "product_name": product_name,
+        "product_version": product_version,
+        "ancestry": ancestry,
+        "total_depth": len(ancestry) - 1,
+        "resolution_method": resolution_method,
     }
