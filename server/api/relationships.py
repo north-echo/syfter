@@ -21,15 +21,22 @@ router = APIRouter()
 
 @router.get("/", response_model=List[ComponentRelationshipResponse])
 def list_relationships(
+    parent_name: Optional[str] = Query(default=None, description="Filter by parent product name"),
+    component_name: Optional[str] = Query(default=None, description="Filter by component product name"),
+    relationship_type: Optional[str] = Query(default=None, description="Filter by type: layered, maintained, build_tool"),
     limit: int = Query(default=100, le=1000),
     offset: int = Query(default=0),
     db: Session = Depends(get_db),
 ):
-    """List all component relationships."""
+    """List component relationships with optional filters.
+
+    Use component_name to find all products that depend on a given base image
+    (reverse ancestry). Use parent_name to find what a product is built from.
+    """
     ParentProduct = aliased(Product)
     ComponentProduct = aliased(Product)
 
-    results = (
+    query = (
         db.query(
             ComponentRelationship,
             ParentProduct.name, ParentProduct.version,
@@ -37,10 +44,16 @@ def list_relationships(
         )
         .join(ParentProduct, ComponentRelationship.parent_product_id == ParentProduct.id)
         .join(ComponentProduct, ComponentRelationship.component_product_id == ComponentProduct.id)
-        .offset(offset)
-        .limit(limit)
-        .all()
     )
+
+    if parent_name:
+        query = query.filter(ParentProduct.name == parent_name)
+    if component_name:
+        query = query.filter(ComponentProduct.name == component_name)
+    if relationship_type:
+        query = query.filter(ComponentRelationship.relationship_type == relationship_type)
+
+    results = query.offset(offset).limit(limit).all()
 
     return [
         ComponentRelationshipResponse(
