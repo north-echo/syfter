@@ -318,7 +318,7 @@ class VulcanAnalysis(Base):
     __tablename__ = "vulcan_analyses"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    cve_id: Mapped[Optional[str]] = mapped_column(String(20))
+    cve_id: Mapped[Optional[str]] = mapped_column(String(50))
     component: Mapped[str] = mapped_column(String(500), nullable=False)
     ps_module: Mapped[Optional[str]] = mapped_column(String(100))
     impact: Mapped[Optional[str]] = mapped_column(String(20))
