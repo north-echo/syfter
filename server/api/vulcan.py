@@ -502,6 +502,7 @@ def resolve_analysis(
     return {
         "id": analysis.id,
         "status": "resolved",
+        "resolved_at": now.isoformat(),
         "resolved_by": body.resolved_by,
         "trackers_resolved": len(open_trackers),
     }
