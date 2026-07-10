@@ -749,6 +749,29 @@ class SyfterClient:
             )
         return self._handle_response(response)
 
+    def import_packages(
+        self,
+        file_path: str,
+        product_name: str,
+        product_version: str = "latest",
+        source_type: str = "package-list",
+    ) -> dict:
+        """Import a package list (JSON array or CSV) without a full SBOM."""
+        with open(file_path, "rb") as f:
+            files = {"packages": (os.path.basename(file_path), f)}
+            data = {
+                "product_name": product_name,
+                "product_version": product_version,
+                "source_type": source_type,
+            }
+            response = self.client.post(
+                self._url("/scans/import-packages"),
+                data=data,
+                files=files,
+                timeout=300.0,
+            )
+        return self._handle_response(response)
+
     # ========================================================================
     # System operations (infrastructure mode)
     # ========================================================================

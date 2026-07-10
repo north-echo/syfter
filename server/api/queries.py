@@ -77,11 +77,12 @@ def search_packages(
     product_name: Optional[str] = Query(default=None, description="Filter by product name (use % as wildcard)"),
     product_version: Optional[str] = Query(default=None, description="Filter by product version (use % as wildcard)"),
     layer_type: Optional[str] = Query(default=None, description="Filter by layer type: 'base' or 'app'"),
+    purl_type: Optional[str] = Query(default=None, description="Filter by package ecosystem: rpm, maven, pypi, npm, golang, gem, cargo"),
     limit: int = Query(default=100, ge=0, le=1000, description="Maximum results"),
     offset: int = Query(default=0, ge=0, description="Offset for pagination"),
     db: Session = Depends(get_db),
 ):
-    """Search for packages across all products. Supports layer_type filter for container scans."""
+    """Search for packages across all products. Supports layer_type and purl_type filters."""
     # Subquery: find matching package IDs with early LIMIT termination.
     # For broad patterns like "lib%" (~500K matches), this lets PostgreSQL
     # use the index to grab just the first N IDs, then JOIN only those.
@@ -104,6 +105,8 @@ def search_packages(
 
     inner = _apply_like_filter(inner, Package.name, name)
     inner = _apply_like_filter(inner, Package.version, pkg_version)
+    if purl_type:
+        inner = inner.filter(Package.purl.like(f"pkg:{purl_type}/%"))
     inner = inner.order_by(collate(Package.name, "C")).offset(offset).limit(limit)
     pkg_ids = inner.subquery()
 
@@ -142,6 +145,7 @@ def package_frequency(
     name: str = Query(..., description="Package name (exact match or % wildcard)"),
     product_name: Optional[str] = Query(default=None, description="Filter by product name (use % as wildcard)"),
     product_version: Optional[str] = Query(default=None, description="Filter by product version (use % as wildcard)"),
+    purl_type: Optional[str] = Query(default=None, description="Filter by package ecosystem: rpm, maven, pypi, npm, golang, gem, cargo"),
     limit: int = Query(default=100, ge=0, le=1000, description="Maximum versions to return"),
     db: Session = Depends(get_db),
 ):
@@ -164,6 +168,8 @@ def package_frequency(
     query = _apply_like_filter(query, Package.name, name)
     query = _apply_like_filter(query, Product.name, product_name)
     query = _apply_like_filter(query, Product.version, product_version)
+    if purl_type:
+        query = query.filter(Package.purl.like(f"pkg:{purl_type}/%"))
 
     results = (
         query.group_by(Package.version)

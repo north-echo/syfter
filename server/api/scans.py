@@ -955,6 +955,211 @@ async def import_sbom(
     )
 
 
+@router.post("/import-packages", response_model=ScanResponse, status_code=201)
+async def import_packages(
+    product_name: str = Form(..., description="Product or project identifier"),
+    product_version: str = Form("latest", description="Version label (default: latest)"),
+    source_type: str = Form("package-list"),
+    packages: UploadFile = File(..., description="Package list (JSON array or CSV, plain or gzip)"),
+    db: Session = Depends(get_db),
+):
+    """
+    Import a plain package list (JSON array or CSV) without a full SBOM.
+
+    Accepts either a JSON array of objects with at minimum a 'name' field,
+    or a CSV file with a header row. Auto-detects format.
+    """
+    import csv as csv_mod
+
+    start_time = time.time()
+    logger.info(f"Starting package-list import for {product_name}-{product_version}")
+
+    raw_data = await packages.read()
+    if not raw_data:
+        raise HTTPException(status_code=400, detail="Empty package file")
+
+    is_gzip = len(raw_data) >= 2 and raw_data[:2] == b"\x1f\x8b"
+    if is_gzip:
+        try:
+            text_data = _safe_gzip_decompress(raw_data).decode("utf-8")
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Failed to decompress: {e}")
+    else:
+        try:
+            text_data = raw_data.decode("utf-8")
+        except UnicodeDecodeError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid UTF-8: {e}")
+
+    # Auto-detect JSON vs CSV
+    stripped = text_data.lstrip()
+    packages_list = []
+
+    if stripped.startswith("[") or stripped.startswith("{"):
+        try:
+            parsed = json.loads(text_data)
+        except json.JSONDecodeError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}")
+
+        if isinstance(parsed, list):
+            packages_list = parsed
+        elif isinstance(parsed, dict):
+            packages_list = [parsed]
+        else:
+            raise HTTPException(status_code=400, detail="JSON must be an array of package objects")
+    else:
+        reader = csv_mod.DictReader(io.StringIO(text_data))
+        for row in reader:
+            pkg = {k.strip(): v.strip() if v else None for k, v in row.items() if k}
+            if pkg.get("name"):
+                packages_list.append(pkg)
+
+    if not packages_list:
+        raise HTTPException(status_code=400, detail="No packages found in file")
+
+    for i, pkg in enumerate(packages_list):
+        if not pkg.get("name"):
+            raise HTTPException(status_code=400, detail=f"Package at index {i} missing required 'name' field")
+
+    logger.info(f"Parsed {len(packages_list)} packages")
+
+    storage = get_storage()
+
+    # Get or create product
+    product = (
+        db.query(Product)
+        .filter(Product.name == product_name, Product.version == product_version)
+        .first()
+    )
+    if not product:
+        product = Product(
+            name=product_name,
+            version=product_version,
+            cpe_product=product_name,
+        )
+        db.add(product)
+        db.commit()
+        db.refresh(product)
+    logger.info(f"Product resolved: id={product.id}")
+
+    # Delete existing scan (replace behavior)
+    existing_scan = db.query(Scan).filter(Scan.product_id == product.id).first()
+    if existing_scan:
+        logger.info(f"Deleting existing scan {existing_scan.id}")
+        try:
+            storage.delete(existing_scan.original_sbom_key)
+            storage.delete(existing_scan.modified_sbom_key)
+        except Exception:
+            pass
+
+        connection = db.connection()
+        raw_conn = connection.connection.dbapi_connection
+        cursor = raw_conn.cursor()
+        is_postgres = 'psycopg' in type(raw_conn).__module__ or 'postgresql' in str(db.bind.url)
+        param = '%s' if is_postgres else '?'
+
+        cursor.execute(f"DELETE FROM dependencies WHERE scan_id = {param}", (existing_scan.id,))
+        cursor.execute(f"DELETE FROM files WHERE scan_id = {param}", (existing_scan.id,))
+        cursor.execute(f"DELETE FROM packages WHERE scan_id = {param}", (existing_scan.id,))
+        cursor.execute(f"DELETE FROM image_layers WHERE scan_id = {param}", (existing_scan.id,))
+        cursor.execute(f"DELETE FROM scans WHERE id = {param}", (existing_scan.id,))
+        raw_conn.commit()
+        db.expire_all()
+        logger.info("Existing scan deleted")
+
+    # Store raw upload as the "original" for archival
+    archive_data = gzip.compress(raw_data)
+    del raw_data
+
+    scan = Scan(
+        product_id=product.id,
+        source_path="package-list-upload",
+        source_type=source_type,
+        original_sbom_key="",
+        modified_sbom_key="",
+        package_count=len(packages_list),
+        file_count=0,
+        original_size_bytes=len(archive_data),
+        modified_size_bytes=0,
+    )
+    db.add(scan)
+    db.commit()
+    db.refresh(scan)
+
+    original_key = _generate_storage_key(product_name, product_version, scan.id, "packages.json.gz")
+    storage.put(original_key, archive_data)
+    del archive_data
+
+    scan.original_sbom_key = original_key
+    scan.modified_sbom_key = original_key
+
+    # Bulk insert packages
+    package_tuples = [
+        (
+            scan.id,
+            product.id,
+            pkg.get("name", ""),
+            pkg.get("version"),
+            pkg.get("release"),
+            pkg.get("arch"),
+            pkg.get("epoch"),
+            pkg.get("source_rpm"),
+            pkg.get("license"),
+            pkg.get("purl"),
+            pkg.get("cpes"),
+            pkg.get("layer_id"),
+            pkg.get("layer_index"),
+            pkg.get("source_image"),
+        )
+        for pkg in packages_list
+    ]
+
+    _pkg_cols = "scan_id, product_id, name, version, release, arch, epoch, source_rpm, license, purl, cpes, layer_id, layer_index, source_image"
+
+    connection = db.connection()
+    raw_conn = connection.connection.dbapi_connection
+    is_postgres = 'psycopg' in type(raw_conn).__module__ or 'postgresql' in str(db.bind.url)
+
+    if is_postgres:
+        from psycopg2.extras import execute_values
+        cursor = raw_conn.cursor()
+        execute_values(
+            cursor,
+            f"INSERT INTO packages ({_pkg_cols}) VALUES %s",
+            package_tuples,
+            page_size=1000,
+        )
+        raw_conn.commit()
+    else:
+        cursor = raw_conn.cursor()
+        cursor.executemany(
+            f"INSERT INTO packages ({_pkg_cols}) VALUES ({','.join('?' * 14)})",
+            package_tuples,
+        )
+        raw_conn.commit()
+
+    db.commit()
+    db.refresh(scan)
+    invalidate_stats_cache()
+
+    elapsed = time.time() - start_time
+    logger.info(f"Package-list import complete: {len(packages_list)} packages in {elapsed:.1f}s")
+
+    return ScanResponse(
+        id=scan.id,
+        product_id=scan.product_id,
+        product_name=product.name,
+        product_version=product.version,
+        source_path=scan.source_path,
+        source_type=scan.source_type,
+        scan_timestamp=scan.scan_timestamp,
+        syft_version=scan.syft_version,
+        package_count=scan.package_count,
+        file_count=0,
+        original_size_bytes=scan.original_size_bytes,
+        modified_size_bytes=0,
+    )
+
+
 @router.delete("/{scan_id}", status_code=204)
 def delete_scan(scan_id: int, db: Session = Depends(get_db)):
     """Delete a scan and its associated data."""
