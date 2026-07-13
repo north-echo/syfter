@@ -118,6 +118,7 @@ class ScanResponse(BaseModel):
     modified_size_bytes: int
     deps_status: Optional[str] = None
     deps_count: int = 0
+    tags: List[str] = []
 
     class Config:
         from_attributes = True
@@ -317,6 +318,25 @@ class ComponentRelationshipResponse(BaseModel):
     component_product_version: str
     relationship_type: str
     created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# Tag schemas
+class TagCreate(BaseModel):
+    """Schema for adding tags to a scan."""
+
+    tags: List[str] = Field(..., description="Tag names to add")
+
+
+class TagResponse(BaseModel):
+    """Schema for tag response."""
+
+    id: int
+    name: str
+    created_at: datetime
+    scan_count: int = 0
 
     class Config:
         from_attributes = True

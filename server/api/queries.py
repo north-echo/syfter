@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import collate, text
 from sqlalchemy.orm import Session
 
-from ..db import get_db, Product, Scan, System, Package, File, ImageLayer, Dependency, ComponentRelationship
+from ..db import get_db, Product, Scan, System, Package, File, ImageLayer, Dependency, ComponentRelationship, Tag, ScanTag
 from .schemas import PackageResponse, PackageFrequencyResponse, FileResponse, StatsResponse, DependencyResponse, ComponentRelationshipResponse
 from ..config import get_config
 
@@ -78,20 +78,25 @@ def search_packages(
     product_version: Optional[str] = Query(default=None, description="Filter by product version (use % as wildcard)"),
     layer_type: Optional[str] = Query(default=None, description="Filter by layer type: 'base' or 'app'"),
     purl_type: Optional[str] = Query(default=None, description="Filter by package ecosystem: rpm, maven, pypi, npm, golang, gem, cargo"),
+    tag: Optional[str] = Query(default=None, description="Filter by scan tag name"),
     limit: int = Query(default=100, ge=0, le=1000, description="Maximum results"),
     offset: int = Query(default=0, ge=0, description="Offset for pagination"),
     db: Session = Depends(get_db),
 ):
-    """Search for packages across all products. Supports layer_type and purl_type filters."""
-    # Subquery: find matching package IDs with early LIMIT termination.
-    # For broad patterns like "lib%" (~500K matches), this lets PostgreSQL
-    # use the index to grab just the first N IDs, then JOIN only those.
+    """Search for packages across all products. Supports layer_type, purl_type, and tag filters."""
     inner = db.query(Package.id)
 
     if product_name or product_version:
         inner = inner.join(Product, Package.product_id == Product.id)
         inner = _apply_like_filter(inner, Product.name, product_name)
         inner = _apply_like_filter(inner, Product.version, product_version)
+
+    if tag:
+        inner = (
+            inner.join(ScanTag, ScanTag.scan_id == Package.scan_id)
+            .join(Tag, Tag.id == ScanTag.tag_id)
+            .filter(Tag.name == tag)
+        )
 
     if layer_type:
         inner = inner.join(

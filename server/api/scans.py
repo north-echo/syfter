@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.orm import Session
 
 from ..config import get_config
-from ..db import get_db, Product, Scan, Package, File as FileModel, ImageLayer, Attestation
+from ..db import get_db, Product, Scan, Package, File as FileModel, ImageLayer, Attestation, Tag, ScanTag
 from ..storage import get_storage
 from .queries import invalidate_stats_cache
 from .schemas import (
@@ -23,7 +23,10 @@ from .schemas import (
     ImportResponse,
     ScanMetadata,
     PackageCreate,
+    TagCreate,
+    TagResponse,
 )
+from .tags import _apply_tags_to_scan, _get_scan_tag_names
 from ..sbom_formats import convert_sbom, SBOMFormat
 
 logger = logging.getLogger(__name__)
@@ -227,6 +230,18 @@ def list_scans(
     query = query.order_by(Scan.scan_timestamp.desc()).offset(offset).limit(limit)
     results = query.all()
 
+    scan_ids = [scan.id for scan, _, _ in results]
+    tag_map = {}
+    if scan_ids:
+        tag_rows = (
+            db.query(ScanTag.scan_id, Tag.name)
+            .join(Tag, ScanTag.tag_id == Tag.id)
+            .filter(ScanTag.scan_id.in_(scan_ids))
+            .all()
+        )
+        for sid, tname in tag_rows:
+            tag_map.setdefault(sid, []).append(tname)
+
     return [
         ScanResponse(
             id=scan.id,
@@ -243,6 +258,7 @@ def list_scans(
             modified_size_bytes=scan.modified_size_bytes,
             deps_status=scan.deps_status,
             deps_count=scan.deps_count,
+            tags=sorted(tag_map.get(scan.id, [])),
         )
         for scan, pname, pversion in results
     ]
@@ -277,6 +293,7 @@ def get_scan(scan_id: int, db: Session = Depends(get_db)):
         modified_size_bytes=scan.modified_size_bytes,
         deps_status=scan.deps_status,
         deps_count=scan.deps_count,
+        tags=_get_scan_tag_names(db, scan.id),
     )
 
 
@@ -295,6 +312,7 @@ async def upload_scan(
     dependencies_json: Optional[UploadFile] = File(None, description="Dependency index JSON (gzip compressed)"),
     image_layers_json: Optional[UploadFile] = File(None, description="Container layer chain JSON (gzip compressed)"),
     attestation_json: Optional[UploadFile] = File(None, description="Cosign attestation data JSON (gzip compressed)"),
+    tags: Optional[str] = Form(None, description="Comma-separated tag names to apply to the scan"),
     db: Session = Depends(get_db),
 ):
     """
@@ -382,6 +400,7 @@ async def upload_scan(
         raw_conn.commit()
         logger.info(f"Packages deleted in {time.time() - pkg_start:.1f}s")
 
+        cursor.execute(f"DELETE FROM scan_tags WHERE scan_id = {param}", (existing_scan.id,))
         cursor.execute(f"DELETE FROM image_layers WHERE scan_id = {param}", (existing_scan.id,))
         cursor.execute(f"DELETE FROM attestations WHERE scan_id = {param}", (existing_scan.id,))
         raw_conn.commit()
@@ -764,6 +783,12 @@ async def upload_scan(
 
     invalidate_stats_cache()
 
+    # Apply tags if provided
+    tag_names = []
+    if tags:
+        tag_names = _apply_tags_to_scan(db, scan.id, [t.strip() for t in tags.split(",")])
+        db.commit()
+
     return ScanResponse(
         id=scan.id,
         product_id=scan.product_id,
@@ -779,6 +804,7 @@ async def upload_scan(
         modified_size_bytes=scan.modified_size_bytes,
         deps_status=scan.deps_status,
         deps_count=scan.deps_count,
+        tags=tag_names,
     )
 
 
@@ -863,7 +889,7 @@ async def import_sbom(
         is_postgres = 'psycopg' in type(raw_conn).__module__ or 'postgresql' in str(db.bind.url)
         param = '%s' if is_postgres else '?'
         cursor = raw_conn.cursor()
-        for table in ["dependencies", "files", "packages", "image_layers", "attestations", "scans"]:
+        for table in ["dependencies", "files", "packages", "scan_tags", "image_layers", "attestations", "scans"]:
             col = "id" if table == "scans" else "scan_id"
             cursor.execute(f"DELETE FROM {table} WHERE {col} = {param}", (existing_scan.id,))
             raw_conn.commit()
@@ -1060,6 +1086,7 @@ async def import_packages(
         cursor.execute(f"DELETE FROM dependencies WHERE scan_id = {param}", (existing_scan.id,))
         cursor.execute(f"DELETE FROM files WHERE scan_id = {param}", (existing_scan.id,))
         cursor.execute(f"DELETE FROM packages WHERE scan_id = {param}", (existing_scan.id,))
+        cursor.execute(f"DELETE FROM scan_tags WHERE scan_id = {param}", (existing_scan.id,))
         cursor.execute(f"DELETE FROM image_layers WHERE scan_id = {param}", (existing_scan.id,))
         cursor.execute(f"DELETE FROM scans WHERE id = {param}", (existing_scan.id,))
         raw_conn.commit()
@@ -1186,8 +1213,67 @@ def delete_scan(scan_id: int, db: Session = Depends(get_db)):
     cursor.execute(f"DELETE FROM dependencies WHERE scan_id = {param}", (scan_id,))
     cursor.execute(f"DELETE FROM files WHERE scan_id = {param}", (scan_id,))
     cursor.execute(f"DELETE FROM packages WHERE scan_id = {param}", (scan_id,))
+    cursor.execute(f"DELETE FROM scan_tags WHERE scan_id = {param}", (scan_id,))
     cursor.execute(f"DELETE FROM scans WHERE id = {param}", (scan_id,))
     raw_conn.commit()
     db.expire_all()
 
     invalidate_stats_cache()
+
+
+@router.get("/{scan_id}/tags", response_model=List[TagResponse])
+def list_scan_tags(scan_id: int, db: Session = Depends(get_db)):
+    """List tags on a scan."""
+    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+
+    from sqlalchemy import func
+    results = (
+        db.query(Tag, func.count(ScanTag.id).label("scan_count"))
+        .join(ScanTag, ScanTag.tag_id == Tag.id)
+        .filter(ScanTag.scan_id == scan_id)
+        .group_by(Tag.id)
+        .order_by(Tag.name)
+        .all()
+    )
+    return [
+        TagResponse(id=tag.id, name=tag.name, created_at=tag.created_at, scan_count=sc)
+        for tag, sc in results
+    ]
+
+
+@router.post("/{scan_id}/tags", response_model=List[TagResponse])
+def add_scan_tags(scan_id: int, body: TagCreate, db: Session = Depends(get_db)):
+    """Add tags to a scan, auto-creating tags that don't exist."""
+    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+
+    _apply_tags_to_scan(db, scan_id, body.tags)
+    db.commit()
+
+    return list_scan_tags(scan_id, db)
+
+
+@router.delete("/{scan_id}/tags/{tag_name}", status_code=204)
+def remove_scan_tag(scan_id: int, tag_name: str, db: Session = Depends(get_db)):
+    """Remove a tag from a scan. Does not delete the tag itself."""
+    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+
+    tag = db.query(Tag).filter(Tag.name == tag_name).first()
+    if not tag:
+        raise HTTPException(status_code=404, detail="Tag not found")
+
+    scan_tag = (
+        db.query(ScanTag)
+        .filter(ScanTag.scan_id == scan_id, ScanTag.tag_id == tag.id)
+        .first()
+    )
+    if not scan_tag:
+        raise HTTPException(status_code=404, detail="Tag not on this scan")
+
+    db.delete(scan_tag)
+    db.commit()

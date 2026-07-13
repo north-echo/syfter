@@ -21,17 +21,26 @@ def list_products(
     limit: int = Query(default=100, le=1000, description="Maximum results"),
     offset: int = Query(default=0, description="Offset for pagination"),
     name: Optional[str] = Query(default=None, description="Filter by product name (case-insensitive substring, or use % as wildcard)"),
+    tag: Optional[str] = Query(default=None, description="Filter to products with scans matching this tag"),
     db: Session = Depends(get_db),
 ):
     """List all products with scan, package, and file counts."""
-    name_filter = ""
+    where_clauses = []
     params = {"limit": limit, "offset": offset}
     if name:
         if "%" in name:
             params["name"] = name.lower()
         else:
             params["name"] = f"%{name.lower()}%"
-        name_filter = "WHERE LOWER(name) LIKE :name"
+        where_clauses.append("LOWER(name) LIKE :name")
+    if tag:
+        params["tag"] = tag
+        where_clauses.append(
+            "id IN (SELECT s.product_id FROM scans s "
+            "JOIN scan_tags st ON st.scan_id = s.id "
+            "JOIN tags t ON t.id = st.tag_id WHERE t.name = :tag)"
+        )
+    name_filter = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
 
     sql = text(f"""
         WITH filtered AS (

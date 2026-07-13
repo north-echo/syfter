@@ -122,6 +122,7 @@ class Scan(Base):
     dependencies: Mapped[List["Dependency"]] = relationship(back_populates="scan", cascade="all, delete-orphan")
     image_layers: Mapped[List["ImageLayer"]] = relationship(back_populates="scan", cascade="all, delete-orphan")
     attestations: Mapped[List["Attestation"]] = relationship(back_populates="scan", cascade="all, delete-orphan")
+    scan_tags: Mapped[List["ScanTag"]] = relationship(back_populates="scan", cascade="all, delete-orphan")
 
     __table_args__ = (
         Index("idx_scan_product", "product_id"),
@@ -391,6 +392,38 @@ class ApiKey(Base):
     __table_args__ = (
         Index("idx_apikey_hash", "key_hash"),
         Index("idx_apikey_team", "team_name"),
+    )
+
+
+class Tag(Base):
+    """Tag for grouping scans (e.g., by customer, product line)."""
+
+    __tablename__ = "tags"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    scan_tags: Mapped[List["ScanTag"]] = relationship(back_populates="tag", cascade="all, delete-orphan")
+
+
+class ScanTag(Base):
+    """Many-to-many join between scans and tags."""
+
+    __tablename__ = "scan_tags"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    scan_id: Mapped[int] = mapped_column(ForeignKey("scans.id", ondelete="CASCADE"), nullable=False)
+    tag_id: Mapped[int] = mapped_column(ForeignKey("tags.id", ondelete="CASCADE"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    scan: Mapped["Scan"] = relationship(back_populates="scan_tags")
+    tag: Mapped["Tag"] = relationship(back_populates="scan_tags")
+
+    __table_args__ = (
+        UniqueConstraint("scan_id", "tag_id", name="uq_scan_tag"),
+        Index("idx_scan_tags_scan_id", "scan_id"),
+        Index("idx_scan_tags_tag_id", "tag_id"),
     )
 
 
