@@ -717,9 +717,10 @@ def frequency(ctx, name, product, product_version, limit, output_json):
 @click.option("-v", "--version", "product_version", required=True, help="Product version")
 @click.option("--description", help="Description for this SBOM")
 @click.option("--source-type", default="sbom", help="Source type (default: sbom)")
+@click.option("--tag", "tags", multiple=True, help="Tag to apply (repeatable)")
 @click.option("--json", "output_json", is_flag=True, help="Output response as JSON")
 @click.pass_context
-def import_sbom(ctx, file_path, product, product_version, description, source_type, output_json):
+def import_sbom(ctx, file_path, product, product_version, description, source_type, tags, output_json):
     """Import an SBOM file (SPDX, CycloneDX, or syft-json).
 
     Auto-detects format and indexes all packages. The original SBOM is
@@ -742,6 +743,7 @@ def import_sbom(ctx, file_path, product, product_version, description, source_ty
                 product_version=product_version,
                 source_type=source_type,
                 description=description,
+                tags=list(tags) if tags else None,
             )
             if output_json:
                 click.echo(json.dumps(result, indent=2))
@@ -750,6 +752,8 @@ def import_sbom(ctx, file_path, product, product_version, description, source_ty
             console.print(f"  Format:  {result['sbom_format']}")
             console.print(f"  Product: {result['product_name']}-{result['product_version']}")
             console.print(f"  Scan ID: {result['id']}")
+            if result.get("tags"):
+                console.print(f"  Tags:    {', '.join(result['tags'])}")
     except httpx.ConnectError:
         console.print(f"[red]Error: Cannot connect to server at {ctx.obj['server_url']}[/red]")
         sys.exit(1)

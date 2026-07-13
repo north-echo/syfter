@@ -814,6 +814,7 @@ async def import_sbom(
     product_version: str = Form(...),
     source_type: str = Form("sbom"),
     description: Optional[str] = Form(None),
+    tags: Optional[str] = Form(None, description="Comma-separated tag names to apply to the scan"),
     sbom: UploadFile = File(..., description="SBOM file (SPDX, CycloneDX, or syft-json; gzip or plain JSON)"),
     db: Session = Depends(get_db),
 ):
@@ -964,6 +965,11 @@ async def import_sbom(
 
     invalidate_stats_cache()
 
+    tag_names = []
+    if tags:
+        tag_names = _apply_tags_to_scan(db, scan.id, [t.strip() for t in tags.split(",")])
+        db.commit()
+
     return ImportResponse(
         id=scan.id,
         product_id=scan.product_id,
@@ -978,6 +984,7 @@ async def import_sbom(
         original_size_bytes=scan.original_size_bytes,
         modified_size_bytes=0,
         sbom_format=detected_format.value,
+        tags=tag_names,
     )
 
 
