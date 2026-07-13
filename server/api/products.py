@@ -5,7 +5,7 @@ Product API endpoints.
 import json
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
@@ -17,34 +17,64 @@ router = APIRouter()
 
 @router.get("/", response_model=List[ProductResponse])
 def list_products(
+    response: Response,
     limit: int = Query(default=100, le=1000, description="Maximum results"),
     offset: int = Query(default=0, description="Offset for pagination"),
+    name: Optional[str] = Query(default=None, description="Filter by product name (case-insensitive substring, or use % as wildcard)"),
+    tag: Optional[str] = Query(default=None, description="Filter to products with scans matching this tag"),
     db: Session = Depends(get_db),
 ):
     """List all products with scan, package, and file counts."""
-    # Raw SQL with CTE + LATERAL: PostgreSQL's planner chooses Hash Join
-    # (full 11M-row seq scan) for ORM subqueries. LATERAL forces Nested
-    # Loop with index scan per product (233ms vs 15.8s).
-    sql = text("""
-        WITH page AS (
+    where_clauses = []
+    params = {"limit": limit, "offset": offset}
+    if name:
+        if "%" in name:
+            params["name"] = name.lower()
+        else:
+            params["name"] = f"%{name.lower()}%"
+        where_clauses.append("LOWER(name) LIKE :name")
+    if tag:
+        params["tag"] = tag
+        where_clauses.append(
+            "id IN (SELECT s.product_id FROM scans s "
+            "JOIN scan_tags st ON st.scan_id = s.id "
+            "JOIN tags t ON t.id = st.tag_id WHERE t.name = :tag)"
+        )
+    name_filter = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+
+    sql = text(f"""
+        WITH filtered AS (
             SELECT id FROM products
+            {name_filter}
             ORDER BY name, version
             LIMIT :limit OFFSET :offset
+        ),
+        total AS (
+            SELECT count(*) AS cnt FROM products
+            {name_filter}
         )
         SELECT p.id, p.name, p.version, p.vendor, p.cpe_vendor,
                p.cpe_product, p.purl_namespace, p.description, p.created_at,
+               p.ps_update_stream, p.ps_module,
                COALESCE(sc.cnt, 0) AS scan_count,
                COALESCE(pc.cnt, 0) AS total_packages,
-               COALESCE(fc.cnt, 0) AS total_files
+               COALESCE(fc.cnt, 0) AS total_files,
+               total.cnt AS _total
         FROM products p
-        JOIN page ON p.id = page.id
+        JOIN filtered ON p.id = filtered.id
+        CROSS JOIN total
         LEFT JOIN LATERAL (SELECT count(*) cnt FROM scans WHERE product_id = p.id) sc ON true
         LEFT JOIN LATERAL (SELECT count(*) cnt FROM packages WHERE product_id = p.id) pc ON true
         LEFT JOIN LATERAL (SELECT count(*) cnt FROM files WHERE product_id = p.id) fc ON true
         ORDER BY p.name, p.version
     """)
 
-    results = db.execute(sql, {"limit": limit, "offset": offset}).fetchall()
+    results = db.execute(sql, params).fetchall()
+
+    if results:
+        response.headers["X-Total-Count"] = str(results[0]._total)
+    else:
+        response.headers["X-Total-Count"] = "0"
 
     return [
         ProductResponse(
@@ -56,6 +86,8 @@ def list_products(
             cpe_product=row.cpe_product,
             purl_namespace=row.purl_namespace,
             description=row.description,
+            ps_update_stream=row.ps_update_stream,
+            ps_module=row.ps_module,
             created_at=row.created_at,
             scan_count=row.scan_count,
             total_packages=row.total_packages,
@@ -90,6 +122,8 @@ def get_product(product_name: str, product_version: str, db: Session = Depends(g
         cpe_product=product.cpe_product,
         purl_namespace=product.purl_namespace,
         description=product.description,
+        ps_update_stream=product.ps_update_stream,
+        ps_module=product.ps_module,
         created_at=product.created_at,
         scan_count=scan_count,
         total_packages=total_packages,
@@ -116,6 +150,8 @@ def create_product(product: ProductCreate, db: Session = Depends(get_db)):
         cpe_product=product.cpe_product or product.name,
         purl_namespace=product.purl_namespace,
         description=product.description,
+        ps_update_stream=product.ps_update_stream,
+        ps_module=product.ps_module,
     )
     db.add(db_product)
     db.commit()
@@ -130,6 +166,8 @@ def create_product(product: ProductCreate, db: Session = Depends(get_db)):
         cpe_product=db_product.cpe_product,
         purl_namespace=db_product.purl_namespace,
         description=db_product.description,
+        ps_update_stream=db_product.ps_update_stream,
+        ps_module=db_product.ps_module,
         created_at=db_product.created_at,
         scan_count=0,
         total_packages=0,

@@ -1,0 +1,104 @@
+"""
+Tag API endpoints.
+"""
+
+import logging
+from typing import List, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import func
+from sqlalchemy.orm import Session
+
+from ..db import get_db, Tag, ScanTag, Scan
+from .schemas import TagCreate, TagResponse
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter()
+
+
+def _get_or_create_tags(db: Session, tag_names: list[str]) -> list[Tag]:
+    """Get or create tags by name. Returns list of Tag objects."""
+    tags = []
+    for name in tag_names:
+        name = name.strip()
+        if not name:
+            continue
+        tag = db.query(Tag).filter(Tag.name == name).first()
+        if not tag:
+            tag = Tag(name=name)
+            db.add(tag)
+            db.flush()
+        tags.append(tag)
+    return tags
+
+
+def _apply_tags_to_scan(db: Session, scan_id: int, tag_names: list[str]) -> list[str]:
+    """Add tags to a scan, auto-creating as needed. Returns final tag list."""
+    tags = _get_or_create_tags(db, tag_names)
+    for tag in tags:
+        existing = (
+            db.query(ScanTag)
+            .filter(ScanTag.scan_id == scan_id, ScanTag.tag_id == tag.id)
+            .first()
+        )
+        if not existing:
+            db.add(ScanTag(scan_id=scan_id, tag_id=tag.id))
+    db.flush()
+    return _get_scan_tag_names(db, scan_id)
+
+
+def _get_scan_tag_names(db: Session, scan_id: int) -> list[str]:
+    """Get tag names for a scan."""
+    rows = (
+        db.query(Tag.name)
+        .join(ScanTag, ScanTag.tag_id == Tag.id)
+        .filter(ScanTag.scan_id == scan_id)
+        .order_by(Tag.name)
+        .all()
+    )
+    return [r[0] for r in rows]
+
+
+@router.get("/", response_model=List[TagResponse])
+def list_tags(
+    name: Optional[str] = Query(default=None, description="Filter by tag name (% wildcard)"),
+    limit: int = Query(default=100, ge=0, le=1000),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+):
+    """List all tags with scan counts."""
+    query = (
+        db.query(Tag, func.count(ScanTag.id).label("scan_count"))
+        .outerjoin(ScanTag, ScanTag.tag_id == Tag.id)
+        .group_by(Tag.id)
+    )
+
+    if name:
+        if "%" in name or "_" in name:
+            query = query.filter(Tag.name.like(name))
+        else:
+            query = query.filter(Tag.name == name)
+
+    results = query.order_by(Tag.name).offset(offset).limit(limit).all()
+
+    return [
+        TagResponse(
+            id=tag.id,
+            name=tag.name,
+            created_at=tag.created_at,
+            scan_count=scan_count,
+        )
+        for tag, scan_count in results
+    ]
+
+
+@router.delete("/{tag_id}", status_code=204)
+def delete_tag(tag_id: int, db: Session = Depends(get_db)):
+    """Delete a tag and all its scan associations."""
+    tag = db.query(Tag).filter(Tag.id == tag_id).first()
+    if not tag:
+        raise HTTPException(status_code=404, detail="Tag not found")
+
+    db.delete(tag)
+    db.commit()

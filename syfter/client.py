@@ -153,9 +153,23 @@ class SyfterClient:
 
     # Product operations
     def list_products(self) -> list:
-        """List all products."""
-        response = self.client.get(self._url("/products/"))
-        return self._handle_response(response)
+        """List all products, paginating through the full result set."""
+        all_products = []
+        offset = 0
+        limit = 500
+        while True:
+            response = self.client.get(
+                self._url("/products/"),
+                params={"limit": limit, "offset": offset},
+            )
+            batch = self._handle_response(response)
+            if not batch:
+                break
+            all_products.extend(batch)
+            if len(batch) < limit:
+                break
+            offset += limit
+        return all_products
 
     def get_product(self, name: str, version: str) -> dict:
         """Get a specific product."""
@@ -605,6 +619,22 @@ class SyfterClient:
         response = self.client.get(self._url("/query/packages"), params=params)
         return self._handle_response(response)
 
+    def package_frequency(
+        self,
+        name: str,
+        product_name: Optional[str] = None,
+        product_version: Optional[str] = None,
+        limit: int = 100,
+    ) -> list:
+        """Get version frequency for a package across SBOMs."""
+        params = {"name": name, "limit": limit}
+        if product_name:
+            params["product_name"] = product_name
+        if product_version:
+            params["product_version"] = product_version
+        response = self.client.get(self._url("/query/packages/frequency"), params=params)
+        return self._handle_response(response)
+
     def search_files(
         self,
         path: Optional[str] = None,
@@ -691,6 +721,55 @@ class SyfterClient:
         response = self.client.get(
             self._url(f"/query/list/files/{product_name}/{product_version}")
         )
+        return self._handle_response(response)
+
+    def import_sbom(
+        self,
+        file_path: str,
+        product_name: str,
+        product_version: str,
+        source_type: str = "sbom",
+        description: Optional[str] = None,
+    ) -> dict:
+        """Import an SBOM file (SPDX, CycloneDX, or syft-json)."""
+        with open(file_path, "rb") as f:
+            files = {"sbom": (os.path.basename(file_path), f)}
+            data = {
+                "product_name": product_name,
+                "product_version": product_version,
+                "source_type": source_type,
+            }
+            if description:
+                data["description"] = description
+            response = self.client.post(
+                self._url("/scans/import"),
+                data=data,
+                files=files,
+                timeout=300.0,
+            )
+        return self._handle_response(response)
+
+    def import_packages(
+        self,
+        file_path: str,
+        product_name: str,
+        product_version: str = "latest",
+        source_type: str = "package-list",
+    ) -> dict:
+        """Import a package list (JSON array or CSV) without a full SBOM."""
+        with open(file_path, "rb") as f:
+            files = {"packages": (os.path.basename(file_path), f)}
+            data = {
+                "product_name": product_name,
+                "product_version": product_version,
+                "source_type": source_type,
+            }
+            response = self.client.post(
+                self._url("/scans/import-packages"),
+                data=data,
+                files=files,
+                timeout=300.0,
+            )
         return self._handle_response(response)
 
     # ========================================================================
