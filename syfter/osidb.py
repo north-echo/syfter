@@ -16,8 +16,8 @@ import urllib.request
 
 
 ENVS = {
-    "prod": "https://osidb.prodsec.redhat.com",
-    "uat": "https://osidb-uat.prodsec.redhat.com",
+    "prod": os.getenv("OSIDB_URL", "https://osidb.prodsec.redhat.com"),
+    "uat": os.getenv("OSIDB_UAT_URL", "https://osidb-uat.prodsec.redhat.com"),
 }
 
 OPEN_RESOLUTIONS = {"", "FIX", "DEFER"}

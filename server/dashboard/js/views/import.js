@@ -19,7 +19,7 @@ const ImportView = {
         <div class="form-row">
           <div class="form-group">
             <label for="import-product">Product name</label>
-            <input type="text" id="import-product" placeholder="e.g., lightwell-acme">
+            <input type="text" id="import-product" placeholder="e.g., my-product">
           </div>
           <div class="form-group">
             <label for="import-version">Version</label>
