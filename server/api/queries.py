@@ -123,6 +123,18 @@ def search_packages(
         .all()
     )
 
+    scan_ids = list({pkg.scan_id for pkg, _, _ in results})
+    tag_map = {}
+    if scan_ids:
+        tag_rows = (
+            db.query(ScanTag.scan_id, Tag.name)
+            .join(Tag, ScanTag.tag_id == Tag.id)
+            .filter(ScanTag.scan_id.in_(scan_ids))
+            .all()
+        )
+        for sid, tname in tag_rows:
+            tag_map.setdefault(sid, []).append(tname)
+
     return [
         PackageResponse(
             id=pkg.id,
@@ -140,6 +152,7 @@ def search_packages(
             layer_id=pkg.layer_id,
             layer_index=pkg.layer_index,
             source_image=pkg.source_image,
+            tags=sorted(tag_map.get(pkg.scan_id, [])),
         )
         for pkg, pname, pversion in results
     ]

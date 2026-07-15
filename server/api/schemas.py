@@ -198,6 +198,7 @@ class PackageResponse(BaseModel):
     layer_id: Optional[str] = None
     layer_index: Optional[int] = None
     source_image: Optional[str] = None
+    tags: List[str] = []
 
     class Config:
         from_attributes = True
