@@ -6,13 +6,19 @@ A fork of [syfter](https://github.com/vdanen/syfter) hardened for multi-team, la
 
 | Capability | Upstream | This Fork |
 |------------|----------|-----------|
-| **Authentication** | None | API key auth (SHA-256, DB-backed) with per-team keys and admin management |
+| **Authentication** | None | API key auth (SHA-256, DB-backed) + OIDC bearer token dual auth |
 | **Rate limiting** | None | Per-key token bucket (60/min queries, 10/min uploads) |
 | **Response caching** | None | In-process cache with auto-invalidation on mutations |
+| **SBOM import** | None | Auto-detect and import SPDX 2.x, CycloneDX 1.x, or syft-json SBOMs |
+| **Package-list import** | None | Import JSON arrays or CSV package lists without a full SBOM |
 | **RPM dependency tracking** | None | 504M requires/provides relationships, queryable by package or dependency name |
 | **Cross-product tracing** | None | `syfter trace` follows a package from RHEL repos through UBI base images into layered containers |
+| **VULCAN analysis** | None | CVE impact analysis with container layer deduplication and tracker recommendations |
+| **Scan tagging** | None | Tag scans for grouping by customer, product line, or team |
+| **CID tag enforcement** | None | Require `CID-` prefixed tags on upload (configurable) |
 | **Attestation indexing** | None | Cosign SLSA provenance and SPDX document attestation metadata |
 | **Component relationships** | None | Product-to-product composition mappings |
+| **Web dashboard** | None | Browser-based SBOM browsing and import |
 | **Products list** | N+1 COUNT queries | LATERAL join -- **16s to 0.4s** |
 | **Package search** | Full table scan + sort | Subquery-first with COLLATE "C" index -- **30s timeout to 0.2s** |
 | **Dependency search** | N/A | Composite index + PK sort -- **< 1s** across 504M rows |
@@ -106,6 +112,13 @@ syfter deps openssl-libs                          # what requires openssl-libs?
 syfter deps --package curl --type requires        # what does curl require?
 syfter deps openssl-libs -p rhel -v 9.6           # scoped to a product
 
+# Import an SBOM (SPDX, CycloneDX, or syft-json)
+syfter import sbom.spdx.json -p myproduct -v 1.0
+syfter import sbom.cdx.json -p myproduct -v 1.0 --tag CID-001
+
+# Package version frequency analysis
+syfter frequency openssl-libs
+
 # Export SBOMs
 syfter export -p rhel -v 10.0 -f spdx-json -o rhel.spdx.json
 syfter export -p rhel -v 10.0 -f cyclonedx-json -o rhel.cdx.json
@@ -115,6 +128,9 @@ syfter scan /path/to/rpms -p rhel -v 10.1
 
 # Component relationships
 syfter relationships
+
+# Check CVE exposure
+syfter vulns -p ubi9 -v 9.7
 
 # Delete a product
 syfter delete -p myproduct -v 1.0
@@ -174,8 +190,24 @@ All endpoints require API key authentication via `X-API-Key` header except `/hea
 - `GET /api/v1/admin/keys/` -- List API keys
 - `DELETE /api/v1/admin/keys/{id}` -- Revoke API key
 
+### VULCAN (CVE Impact Analysis)
+- `POST /api/v1/vulcan/analyze` -- Analyze CVE impact across component and layer boundaries
+- `GET /api/v1/vulcan/analyses` -- List stored analyses (filter by status, CVE, component)
+- `GET /api/v1/vulcan/analyses/{id}` -- Get analysis with full tracker detail
+- `POST /api/v1/vulcan/analyses/{id}/resolve` -- Mark analysis resolved
+- `DELETE /api/v1/vulcan/analyses/{id}` -- Delete analysis
+
+### Tags
+- `GET /api/v1/tags` -- List all tags with scan counts
+- `DELETE /api/v1/tags/{id}` -- Delete a tag
+- `GET /api/v1/scans/{id}/tags` -- List tags on a scan
+- `POST /api/v1/scans/{id}/tags` -- Add tags to a scan
+- `DELETE /api/v1/scans/{id}/tags/{tag_name}` -- Remove a tag
+
 ### Upload
-- `POST /api/v1/scans/upload` -- Upload scan results (multipart, supports `dependencies_json`, `image_layers_json`, `attestation_json`)
+- `POST /api/v1/scans/upload` -- Upload scan results (multipart, supports `dependencies_json`, `image_layers_json`, `attestation_json`, `tags`)
+- `POST /api/v1/scans/import` -- Import SBOM in any supported format (SPDX 2.x, CycloneDX 1.x, syft-json)
+- `POST /api/v1/scans/import-packages` -- Import a plain package list (JSON array or CSV)
 
 ## Configuration
 
@@ -193,6 +225,10 @@ All settings via environment variables (same as upstream, plus these):
 | `SYFTER_RATE_LIMIT_UPLOAD_BURST` | `5` | Upload burst allowance |
 | `SYFTER_CACHE_STATS_TTL` | `300` | Stats cache TTL (seconds) |
 | `SYFTER_CACHE_PRODUCTS_TTL` | `300` | Products cache TTL (seconds) |
+| `SYFTER_OIDC_ISSUER_URL` | -- | OIDC issuer URL for bearer token auth (e.g. Keycloak realm) |
+| `SYFTER_OIDC_CLIENT_ID` | `syfter-api` | OIDC client ID for token validation |
+| `SYFTER_REQUIRE_CID_TAG` | `false` | Require at least one `CID-` prefixed tag on upload |
+| `SYFTER_SKIP_FILE_INDEX_THRESHOLD` | `100000` | Auto-skip file indexing above this package count |
 
 Set `SYFTER_AUTH_ENABLED=false` for local development without keys.
 
@@ -234,8 +270,16 @@ A typical deployment includes:
 | #5 | Gzip validation fix | Merged |
 | #6 | Jobs FK cleanup on scan replacement | Merged |
 | #7 | API key auth support in CLI | Merged |
+| #8 | Package version filter for queries | Merged |
 | #9 | CLI restructure, trace command, dependency tracking, OOM fix | Merged |
-| #17 | Dependency query PK sort fix | Open |
+| #17 | Dependency query PK sort fix | Closed |
+| #18 | README update and dependency query fix | Merged |
+| #22 | Develop branch install instructions | Merged |
+| #23 | Scanning infrastructure, SBOM import, frequency endpoint | Open |
+| #24 | Enterprise features: tags, VULCAN, dashboard, layers, auth | Merged |
+| #25 | Fix 9 CVEs in starlette and python-multipart | Open |
+| #26 | Tag support for SBOM import endpoint and CLI | Open |
+| #27 | Tags in import endpoint and package query response | Open |
 
 ## License
 

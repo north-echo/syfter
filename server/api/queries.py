@@ -389,7 +389,7 @@ def list_all_files(
 def search_dependencies(
     package_name: Optional[str] = Query(default=None, description="Package name (exact or % wildcard)"),
     dependency_name: Optional[str] = Query(default=None, description="Dependency name (exact or % wildcard)"),
-    dependency_type: Optional[str] = Query(default=None, description="'requires' or 'provides'"),
+    dependency_type: Optional[str] = Query(default=None, description="'requires', 'provides', or 'depends_on'"),
     product_name: Optional[str] = Query(default=None, description="Filter by product name (use % as wildcard)"),
     product_version: Optional[str] = Query(default=None, description="Filter by product version (use % as wildcard)"),
     limit: int = Query(default=100, ge=0, le=1000, description="Maximum results"),

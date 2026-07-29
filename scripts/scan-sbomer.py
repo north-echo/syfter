@@ -264,6 +264,13 @@ def load_manifest(source):
             return json.load(f)
 
 
+def _flatten_components(components):
+    """Recursively flatten nested CycloneDX components."""
+    for comp in components:
+        yield comp
+        yield from _flatten_components(comp.get("components", []))
+
+
 def build_packages_index_cyclonedx(cdx_sbom):
     """Build syfter packages_json index from a CycloneDX 1.6 SBOM."""
     packages = []
@@ -271,7 +278,7 @@ def build_packages_index_cyclonedx(cdx_sbom):
     product_cpe = extract_product_cpe(cdx_sbom)
     cpes_json = json.dumps([product_cpe]) if product_cpe else "[]"
 
-    for comp in cdx_sbom.get("components", []):
+    for comp in _flatten_components(cdx_sbom.get("components", [])):
         purl = comp.get("purl", "")
         if not purl:
             continue
@@ -323,6 +330,72 @@ def build_packages_index_cyclonedx(cdx_sbom):
     return packages
 
 
+def build_cyclonedx_dependencies(cdx_sbom, packages_index):
+    """Extract dependency edges from CycloneDX dependencies array."""
+    deps_array = cdx_sbom.get("dependencies", [])
+    if not deps_array:
+        return None
+
+    bomref_to_comp = {}
+    for comp in _flatten_components(cdx_sbom.get("components", [])):
+        ref = comp.get("bom-ref", "")
+        if ref:
+            bomref_to_comp[ref] = comp
+
+    known_purls = {p["purl"] for p in packages_index if p.get("purl")}
+
+    deps = []
+    for entry in deps_array:
+        ref = entry.get("ref", "")
+        source_comp = bomref_to_comp.get(ref)
+        if not source_comp:
+            continue
+        s_purl = source_comp.get("purl", "")
+        if not s_purl:
+            continue
+        _, _, s_name, s_ver, s_quals = _parse_purl(s_purl)
+        s_name = source_comp.get("name", s_name or "")
+        s_ver = s_ver or source_comp.get("version", "")
+        s_arch = s_quals.get("arch", "")
+
+        for target_ref in entry.get("dependsOn", []):
+            target_comp = bomref_to_comp.get(target_ref)
+            if target_comp:
+                t_purl = target_comp.get("purl", "")
+            else:
+                t_purl = target_ref if target_ref.startswith("pkg:") else ""
+            if not t_purl:
+                continue
+
+            _, _, t_name, t_ver, _ = _parse_purl(t_purl)
+            if target_comp:
+                t_name = target_comp.get("name", t_name or "")
+                t_ver = t_ver or target_comp.get("version", "")
+
+            deps.append({
+                "package_name": s_name,
+                "package_version": s_ver,
+                "package_arch": s_arch,
+                "dependency_name": t_purl,
+                "dependency_version": t_ver,
+                "dependency_flags": None,
+                "dependency_type": "depends_on",
+            })
+
+            if t_purl not in known_purls:
+                known_purls.add(t_purl)
+                pkg_type_raw, _, _, _, _ = _parse_purl(t_purl)
+                pkg_type = PURL_TYPE_MAP.get(pkg_type_raw, pkg_type_raw or "unknown")
+                packages_index.append({
+                    "name": t_name or "", "version": t_ver or "",
+                    "type": pkg_type, "purl": t_purl, "cpes": "[]",
+                    "license": "", "source_image": "", "layer_id": None,
+                    "release": "", "arch": "", "epoch": None, "source_rpm": "",
+                })
+
+    return deps if deps else None
+
+
 def scan_sbomer_manifest(source, product, version, server_url, dry_run=False,
                          preloaded_bom=None):
     """Scan a single SBOMer manifest. Returns (status, count, message)."""
@@ -348,7 +421,10 @@ def scan_sbomer_manifest(source, product, version, server_url, dry_run=False,
         print(f"  Format: CycloneDX {spec_version}")
         print(f"  Main component: {meta_comp.get('name', 'N/A')}")
         print(f"  Product CPE: {product_cpe or 'None'}")
-        print(f"  Components: {len(cdx_sbom.get('components', []))}")
+        top_level = len(cdx_sbom.get("components", []))
+        total = sum(1 for _ in _flatten_components(cdx_sbom.get("components", [])))
+        nested_note = f" ({total} with nested)" if total != top_level else ""
+        print(f"  Components: {top_level}{nested_note}")
         print(f"  Packages (after filtering): {len(packages_index)}")
         print(f"  Types: {type_summary}")
         print(f"  Upload target: {product}/{version}")
@@ -358,6 +434,10 @@ def scan_sbomer_manifest(source, product, version, server_url, dry_run=False,
         if len(packages_index) > 5:
             print(f"  ... and {len(packages_index) - 5} more")
         return "dry-run", len(packages_index), f"{len(packages_index)} packages ({type_summary})"
+
+    dependencies_index = build_cyclonedx_dependencies(cdx_sbom, packages_index)
+    if dependencies_index:
+        log.info("Extracted %d dependency edges from CycloneDX dependencies graph", len(dependencies_index))
 
     log.info("Uploading %d packages (%s) as %s/%s", len(packages_index), type_summary, product, version)
 
@@ -376,6 +456,7 @@ def scan_sbomer_manifest(source, product, version, server_url, dry_run=False,
     upload_to_syfter(
         server_url, product, version, source,
         cdx_sbom, packages_index,
+        dependencies_index=dependencies_index,
         source_type="sbomer",
         syft_version=tool_version,
     )

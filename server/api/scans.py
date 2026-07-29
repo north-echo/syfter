@@ -852,7 +852,7 @@ async def import_sbom(
     gc.collect()
 
     try:
-        detected_format, packages_list = convert_sbom(sbom_dict)
+        detected_format, packages_list, deps_list = convert_sbom(sbom_dict)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -936,6 +936,8 @@ async def import_sbom(
     raw_conn = connection.connection.dbapi_connection
     is_postgres = 'psycopg' in type(raw_conn).__module__ or 'postgresql' in str(db.bind.url)
 
+    scan.package_count = len(packages_list)
+
     package_tuples = [
         (
             scan.id, product.id,
@@ -961,6 +963,26 @@ async def import_sbom(
 
     db.expire_all()
     db.commit()
+
+    if deps_list:
+        cursor = raw_conn.cursor()
+        cursor.execute(
+            ("SELECT id, name, version, arch FROM packages WHERE scan_id = %s" if is_postgres
+             else "SELECT id, name, version, arch FROM packages WHERE scan_id = ?"),
+            (scan.id,),
+        )
+        packages_by_key = {(row[1], row[2], row[3]): row[0] for row in cursor.fetchall()}
+        dep_compressed = gzip.compress(json.dumps(deps_list).encode())
+        scan.deps_status = "pending"
+        db.commit()
+        t = threading.Thread(
+            target=_insert_dependencies_background,
+            args=(scan.id, product.id, dep_compressed, packages_by_key, str(db.bind.url)),
+            daemon=True,
+            name=f"deps-import-{scan.id}",
+        )
+        t.start()
+        logger.info(f"Started background dependency insertion: {len(deps_list)} edges")
 
     elapsed = time.time() - start_time
     logger.info(f"Import complete: {scan.package_count} packages indexed in {elapsed:.1f}s")
