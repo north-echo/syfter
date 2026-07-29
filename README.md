@@ -1,6 +1,6 @@
 # Syfter
 
-A fork of [syfter](https://github.com/vdanen/syfter) hardened for multi-team, large-scale SBOM management. Adds authentication, rate limiting, response caching, RPM dependency tracking, cross-product tracing, container attestation indexing, and query performance fixes for 20M+ package deployments.
+A fork of [syfter](https://github.com/vdanen/syfter) hardened for multi-team, large-scale SBOM management. Adds authentication, rate limiting, response caching, recursive SBOM extraction, dependency graph parsing, RPM dependency tracking, cross-product tracing, container attestation indexing, and query performance fixes for 20M+ package deployments.
 
 ## What This Fork Adds
 
@@ -11,6 +11,8 @@ A fork of [syfter](https://github.com/vdanen/syfter) hardened for multi-team, la
 | **Response caching** | None | In-process cache with auto-invalidation on mutations |
 | **SBOM import** | None | Auto-detect and import SPDX 2.x, CycloneDX 1.x, or syft-json SBOMs |
 | **Package-list import** | None | Import JSON arrays or CSV package lists without a full SBOM |
+| **Recursive SBOM extraction** | None | Flatten nested CycloneDX sub-components and SPDX CONTAINS relationships |
+| **Dependency graph parsing** | None | CycloneDX `dependencies` and SPDX `DEPENDS_ON` edges, auto-discovers transitive packages |
 | **RPM dependency tracking** | None | 504M requires/provides relationships, queryable by package or dependency name |
 | **Cross-product tracing** | None | `syfter trace` follows a package from RHEL repos through UBI base images into layered containers |
 | **VULCAN analysis** | None | CVE impact analysis with container layer deduplication and tracker recommendations |
