@@ -26,7 +26,7 @@ from .schemas import (
     TagCreate,
     TagResponse,
 )
-from .tags import _apply_tags_to_scan, _get_scan_tag_names
+from .tags import _apply_tags_to_scan, _get_scan_tag_names, validate_cid_tag_requirement
 from ..sbom_formats import convert_sbom, SBOMFormat
 
 logger = logging.getLogger(__name__)
@@ -321,6 +321,7 @@ async def upload_scan(
     All files should be gzip compressed JSON.
     If a scan already exists for this product, it will be replaced.
     """
+    validate_cid_tag_requirement(tags)
     start_time = time.time()
     logger.info(f"Starting upload for {product_name}-{product_version}")
 
@@ -825,6 +826,7 @@ async def import_sbom(
     original SBOM in object storage and indexes all packages in the database.
     Accepts both gzip-compressed and plain JSON uploads.
     """
+    validate_cid_tag_requirement(tags)
     start_time = time.time()
     logger.info(f"Starting SBOM import for {product_name}-{product_version}")
 
@@ -994,6 +996,7 @@ async def import_packages(
     product_version: str = Form("latest", description="Version label (default: latest)"),
     source_type: str = Form("package-list"),
     packages: UploadFile = File(..., description="Package list (JSON array or CSV, plain or gzip)"),
+    tags: Optional[str] = Form(None, description="Comma-separated tag names to apply to the scan"),
     db: Session = Depends(get_db),
 ):
     """
@@ -1002,6 +1005,7 @@ async def import_packages(
     Accepts either a JSON array of objects with at minimum a 'name' field,
     or a CSV file with a header row. Auto-detects format.
     """
+    validate_cid_tag_requirement(tags)
     import csv as csv_mod
 
     start_time = time.time()
@@ -1175,6 +1179,11 @@ async def import_packages(
     db.refresh(scan)
     invalidate_stats_cache()
 
+    tag_names = []
+    if tags:
+        tag_names = _apply_tags_to_scan(db, scan.id, [t.strip() for t in tags.split(",")])
+        db.commit()
+
     elapsed = time.time() - start_time
     logger.info(f"Package-list import complete: {len(packages_list)} packages in {elapsed:.1f}s")
 
@@ -1191,6 +1200,7 @@ async def import_packages(
         file_count=0,
         original_size_bytes=scan.original_size_bytes,
         modified_size_bytes=0,
+        tags=tag_names,
     )
 
 

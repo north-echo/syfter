@@ -132,6 +132,8 @@ class ServerConfig:
     oidc_issuer_url: Optional[str] = None  # e.g. https://keycloak.../realms/syfter
     oidc_client_id: str = "syfter-api"
     oidc_jwks_cache_ttl: int = 3600    # seconds (1 hour)
+    # CID tag enforcement
+    require_cid_tag: bool = False
 
     database: DatabaseConfig = field(default_factory=DatabaseConfig.from_env)
     storage: StorageConfig = field(default_factory=StorageConfig.from_env)
@@ -159,6 +161,7 @@ class ServerConfig:
             oidc_issuer_url=os.getenv("SYFTER_OIDC_ISSUER_URL"),
             oidc_client_id=os.getenv("SYFTER_OIDC_CLIENT_ID", "syfter-api"),
             oidc_jwks_cache_ttl=int(os.getenv("SYFTER_OIDC_JWKS_CACHE_TTL", "3600")),
+            require_cid_tag=os.getenv("SYFTER_REQUIRE_CID_TAG", "false").lower() == "true",
             database=DatabaseConfig.from_env(),
             storage=StorageConfig.from_env(),
         )
