@@ -62,8 +62,8 @@ PURL_TYPE_MAP = {
 COLUMN_ALIASES = {
     "name": ["purl_name", "name", "package_name", "pkg_name", "component",
              "package", "artifact_id", "artifactid"],
-    "version": ["citi_version", "version", "pkg_version", "installed_version",
-                 "current_version", "component_version"],
+    "version": ["current_version", "version", "pkg_version", "installed_version",
+                 "component_version", "citi_version"],
     "purl": ["purl_canonical", "purl", "package_url"],
     "type": ["purl_type", "type", "pkg_type", "package_type", "ecosystem"],
     "namespace": ["purl_namespace", "namespace", "group_id", "group", "scope"],

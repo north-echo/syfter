@@ -33,7 +33,7 @@ The first CSV we received is a dependency risk assessment export with 13 fields.
 | `purl_canonical` | `purl` | Used directly — no PURL generation needed |
 | `purl_type` | `type` | maven, npm, pypi, golang, etc. |
 | `purl_name` | `name` | Package name |
-| `citi_version` | `version` | The version the customer is actually running |
+| `current_version` / `version` | `version` | The version the customer is actually running |
 
 ### Preserved in S3 (not indexed in DB)
 
@@ -44,7 +44,7 @@ These fields don't map to syfter's package schema but contain useful supply chai
 | `Priority` | Customer's priority ranking |
 | `purl_namespace` | Already encoded in `purl_canonical` |
 | `latest_version` | Latest available version (useful for drift analysis) |
-| `citi_version_release_date` | When the customer's version was released |
+| `current_version_release_date` | When the customer's version was released |
 | `last_commit_at` | Last upstream commit date |
 | `last_release_at` | Last upstream release date |
 | `is_repo_archived` | Whether the upstream repo is archived |
@@ -62,7 +62,7 @@ These fields don't map to syfter's package schema but contain useful supply chai
 The script won't be hardcoded to this one CSV format. It auto-detects columns by name and supports explicit mapping via CLI flags:
 
 ```bash
-# Auto-detect: looks for purl_canonical, purl_name, citi_version, etc.
+# Auto-detect: looks for purl_canonical, purl_name, current_version, etc.
 python3 scan-csv.py packages.csv --product "app" --version "1.0" --tags CID-0xdf3
 
 # Explicit mapping for CSVs with different headers
