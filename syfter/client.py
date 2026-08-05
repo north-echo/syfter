@@ -730,6 +730,7 @@ class SyfterClient:
         product_version: str,
         source_type: str = "sbom",
         description: Optional[str] = None,
+        tags: Optional[list[str]] = None,
     ) -> dict:
         """Import an SBOM file (SPDX, CycloneDX, or syft-json)."""
         with open(file_path, "rb") as f:
@@ -741,6 +742,8 @@ class SyfterClient:
             }
             if description:
                 data["description"] = description
+            if tags:
+                data["tags"] = ",".join(tags)
             response = self.client.post(
                 self._url("/scans/import"),
                 data=data,

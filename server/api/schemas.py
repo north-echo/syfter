@@ -140,6 +140,7 @@ class ImportResponse(BaseModel):
     original_size_bytes: int
     modified_size_bytes: int
     sbom_format: str = Field(description="Detected SBOM format (spdx, cyclonedx, syft-json)")
+    tags: list[str] = Field(default_factory=list, description="Applied tag names")
 
     class Config:
         from_attributes = True
@@ -197,6 +198,7 @@ class PackageResponse(BaseModel):
     layer_id: Optional[str] = None
     layer_index: Optional[int] = None
     source_image: Optional[str] = None
+    tags: List[str] = []
 
     class Config:
         from_attributes = True

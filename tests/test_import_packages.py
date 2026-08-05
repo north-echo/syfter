@@ -256,3 +256,78 @@ class TestCustomerIdPattern:
         assert resp.status_code == 200
         results = resp.json()
         assert len(results) == 2
+
+
+# ── CID tag enforcement ─────────────────────────────────────────────────
+
+
+class TestCidTagEnforcement:
+
+    @pytest.fixture(autouse=True)
+    def enable_enforcement(self):
+        from server.config import get_config
+        config = get_config()
+        original = config.require_cid_tag
+        config.require_cid_tag = True
+        yield
+        config.require_cid_tag = original
+
+    def _packages_file(self):
+        data = json.dumps([{"name": "openssl", "version": "3.0.7"}]).encode()
+        return ("packages.json", data, "application/json")
+
+    def test_rejected_without_tags(self, api):
+        resp = api.post(
+            "/api/v1/scans/import-packages",
+            data={"product_name": "CID-300001", "product_version": "latest"},
+            files={"packages": self._packages_file()},
+        )
+        assert resp.status_code == 400
+        assert "CID-" in resp.json()["detail"]
+
+    def test_rejected_with_non_cid_tags(self, api):
+        resp = api.post(
+            "/api/v1/scans/import-packages",
+            data={"product_name": "CID-300001", "product_version": "latest", "tags": "team-a,prod"},
+            files={"packages": self._packages_file()},
+        )
+        assert resp.status_code == 400
+        assert "CID-" in resp.json()["detail"]
+
+    def test_accepted_with_cid_tag(self, api):
+        resp = api.post(
+            "/api/v1/scans/import-packages",
+            data={"product_name": "CID-300001", "product_version": "latest", "tags": "CID-300001"},
+            files={"packages": self._packages_file()},
+        )
+        assert resp.status_code == 201
+        assert "CID-300001" in resp.json()["tags"]
+
+    def test_accepted_with_mixed_tags(self, api):
+        resp = api.post(
+            "/api/v1/scans/import-packages",
+            data={"product_name": "CID-300002", "product_version": "latest", "tags": "team-a,CID-300002"},
+            files={"packages": self._packages_file()},
+        )
+        assert resp.status_code == 201
+        assert "CID-300002" in resp.json()["tags"]
+
+    def test_rejected_with_lowercase_cid(self, api):
+        resp = api.post(
+            "/api/v1/scans/import-packages",
+            data={"product_name": "CID-300003", "product_version": "latest", "tags": "cid-300003"},
+            files={"packages": self._packages_file()},
+        )
+        assert resp.status_code == 400
+
+    def test_enforcement_off_allows_no_tags(self):
+        from server.config import get_config
+        get_config().require_cid_tag = False
+        from server.main import app
+        client = TestClient(app)
+        resp = client.post(
+            "/api/v1/scans/import-packages",
+            data={"product_name": "CID-300004", "product_version": "latest"},
+            files={"packages": self._packages_file()},
+        )
+        assert resp.status_code == 201

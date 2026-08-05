@@ -9,12 +9,27 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from ..config import get_config
 from ..db import get_db, Tag, ScanTag, Scan
 from .schemas import TagCreate, TagResponse
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+CID_TAG_PREFIX = "CID-"
+
+
+def validate_cid_tag_requirement(tags: Optional[str]) -> None:
+    """Reject uploads missing a CID- prefixed tag when enforcement is enabled."""
+    if not get_config().require_cid_tag:
+        return
+    tag_names = [t.strip() for t in (tags or "").split(",") if t.strip()]
+    if not any(name.startswith(CID_TAG_PREFIX) for name in tag_names):
+        raise HTTPException(
+            status_code=400,
+            detail=f"At least one tag with a '{CID_TAG_PREFIX}' prefix is required (e.g. CID-001)",
+        )
 
 
 def _get_or_create_tags(db: Session, tag_names: list[str]) -> list[Tag]:

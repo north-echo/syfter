@@ -123,6 +123,18 @@ def search_packages(
         .all()
     )
 
+    scan_ids = list({pkg.scan_id for pkg, _, _ in results})
+    tag_map = {}
+    if scan_ids:
+        tag_rows = (
+            db.query(ScanTag.scan_id, Tag.name)
+            .join(Tag, ScanTag.tag_id == Tag.id)
+            .filter(ScanTag.scan_id.in_(scan_ids))
+            .all()
+        )
+        for sid, tname in tag_rows:
+            tag_map.setdefault(sid, []).append(tname)
+
     return [
         PackageResponse(
             id=pkg.id,
@@ -140,6 +152,7 @@ def search_packages(
             layer_id=pkg.layer_id,
             layer_index=pkg.layer_index,
             source_image=pkg.source_image,
+            tags=sorted(tag_map.get(pkg.scan_id, [])),
         )
         for pkg, pname, pversion in results
     ]
@@ -376,7 +389,7 @@ def list_all_files(
 def search_dependencies(
     package_name: Optional[str] = Query(default=None, description="Package name (exact or % wildcard)"),
     dependency_name: Optional[str] = Query(default=None, description="Dependency name (exact or % wildcard)"),
-    dependency_type: Optional[str] = Query(default=None, description="'requires' or 'provides'"),
+    dependency_type: Optional[str] = Query(default=None, description="'requires', 'provides', or 'depends_on'"),
     product_name: Optional[str] = Query(default=None, description="Filter by product name (use % as wildcard)"),
     product_version: Optional[str] = Query(default=None, description="Filter by product version (use % as wildcard)"),
     limit: int = Query(default=100, ge=0, le=1000, description="Maximum results"),
