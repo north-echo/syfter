@@ -63,7 +63,7 @@ COLUMN_ALIASES = {
     "name": ["purl_name", "name", "package_name", "pkg_name", "component",
              "package", "artifact_id", "artifactid"],
     "version": ["current_version", "version", "pkg_version", "installed_version",
-                 "component_version", "citi_version"],
+                 "component_version"],
     "purl": ["purl_canonical", "purl", "package_url"],
     "type": ["purl_type", "type", "pkg_type", "package_type", "ecosystem"],
     "namespace": ["purl_namespace", "namespace", "group_id", "group", "scope"],
@@ -71,7 +71,7 @@ COLUMN_ALIASES = {
 }
 
 EXTRA_FIELDS = [
-    "priority", "latest_version", "citi_version_release_date",
+    "priority", "latest_version", "version_release_date",
     "last_commit_at", "last_release_at", "is_repo_archived",
     "relocation_type", "package_status",
 ]
