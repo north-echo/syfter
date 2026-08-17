@@ -1131,7 +1131,7 @@ def tag_rename(ctx, old_name, new_name):
     """Rename a tag.
 
     Examples:
-        syfter tag rename CID-778092 CID-0xdf3
+        syfter tag rename old-tag-name new-tag-name
         syfter tag rename "old tag" "new tag"
     """
     if ctx.obj["local_mode"]:
@@ -1165,8 +1165,8 @@ def tag_delete(ctx, name, yes):
     """Delete a tag (does not delete the scans).
 
     Examples:
-        syfter tag delete CID-778092
-        syfter tag delete CID-778092 --yes
+        syfter tag delete old-tag
+        syfter tag delete old-tag --yes
     """
     if ctx.obj["local_mode"]:
         console.print("[red]Error: tags require server mode[/red]")
