@@ -11,7 +11,7 @@ import threading
 import time
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
 from sqlalchemy.orm import Session
 
 from ..config import get_config
@@ -215,8 +215,8 @@ def _insert_dependencies_background(scan_id, product_id, dep_compressed, package
 @router.get("/", response_model=List[ScanResponse])
 def list_scans(
     product_name: Optional[str] = None,
-    limit: int = 100,
-    offset: int = 0,
+    limit: int = Query(default=100, ge=0, le=1000, description="Maximum results"),
+    offset: int = Query(default=0, ge=0, description="Offset for pagination"),
     db: Session = Depends(get_db),
 ):
     """List scans, optionally filtered by product."""

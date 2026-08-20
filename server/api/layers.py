@@ -77,8 +77,8 @@ def search_packages_by_layer(
     pkg_version: Optional[str] = Query(default=None, description="Package version pattern"),
     layer_type: Optional[str] = Query(default=None, description="'base' or 'app'"),
     product_name: Optional[str] = Query(default=None, description="Filter by product name"),
-    limit: int = Query(default=100, le=1000, description="Maximum results"),
-    offset: int = Query(default=0, description="Offset for pagination"),
+    limit: int = Query(default=100, ge=0, le=1000, description="Maximum results"),
+    offset: int = Query(default=0, ge=0, description="Offset for pagination"),
     db: Session = Depends(get_db),
 ):
     """
@@ -247,8 +247,8 @@ def get_layer_packages(
         default=None,
         description="Filter by layer type: 'base' or 'app'",
     ),
-    limit: int = Query(default=1000, le=10000, description="Maximum results"),
-    offset: int = Query(default=0, description="Offset for pagination"),
+    limit: int = Query(default=1000, ge=0, le=10000, description="Maximum results"),
+    offset: int = Query(default=0, ge=0, description="Offset for pagination"),
     db: Session = Depends(get_db),
 ) -> List[LayerPackageResponse]:
     """

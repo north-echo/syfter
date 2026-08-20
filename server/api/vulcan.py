@@ -384,7 +384,7 @@ def list_analyses(
     status: Optional[str] = Query(default=None, description="Filter by status"),
     cve_id: Optional[str] = Query(default=None, description="Filter by CVE ID"),
     component: Optional[str] = Query(default=None, description="Filter by component"),
-    limit: int = Query(default=50, le=500),
+    limit: int = Query(default=50, ge=0, le=500),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
 ):

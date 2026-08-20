@@ -75,6 +75,27 @@ class TestQueryValidation:
         response = api_client.get("/api/v1/query/packages?offset=-1")
         assert response.status_code == 422
 
+    @pytest.mark.parametrize("endpoint", [
+        "/api/v1/scans/?limit=-1",
+        "/api/v1/scans/?offset=-1",
+        "/api/v1/products/?limit=-1",
+        "/api/v1/products/?offset=-1",
+        "/api/v1/systems/?limit=-1",
+        "/api/v1/systems/?offset=-1",
+        "/api/v1/relationships/?limit=-1",
+        "/api/v1/relationships/?offset=-1",
+        "/api/v1/query/files?limit=-1",
+        "/api/v1/query/files?offset=-1",
+        "/api/v1/query/dependencies?limit=-1",
+        "/api/v1/query/dependencies?offset=-1",
+        "/api/v1/tags/?limit=-1",
+        "/api/v1/tags/?offset=-1",
+        "/api/v1/layers/search/packages?limit=-1",
+        "/api/v1/vulcan/analyses?limit=-1",
+    ])
+    def test_negative_params_return_422(self, api_client, endpoint):
+        assert api_client.get(endpoint).status_code == 422
+
 
 class TestS3EndpointNormalization:
     """WI #7: bare hostnames get https:// prefix."""
