@@ -25,8 +25,8 @@ def list_relationships(
     parent_name: Optional[str] = Query(default=None, description="Filter by parent product name"),
     component_name: Optional[str] = Query(default=None, description="Filter by component product name"),
     relationship_type: Optional[str] = Query(default=None, description="Filter by type: layered, maintained, build_tool"),
-    limit: int = Query(default=100, le=1000),
-    offset: int = Query(default=0),
+    limit: int = Query(default=100, ge=0, le=1000),
+    offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
 ):
     """List component relationships with optional filters.

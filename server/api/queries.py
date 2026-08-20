@@ -486,7 +486,7 @@ def get_provenance(
     product_name: str,
     product_version: str,
     package_name_filter: Optional[str] = Query(default=None, description="Filter to specific package name"),
-    limit: int = Query(default=100, le=1000, description="Maximum results"),
+    limit: int = Query(default=100, ge=0, le=1000, description="Maximum results"),
     db: Session = Depends(get_db),
 ):
     """Find all products sharing packages with this product, with relationship context."""

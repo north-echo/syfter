@@ -18,8 +18,8 @@ router = APIRouter()
 @router.get("/", response_model=List[SystemResponse])
 def list_systems(
     tag: Optional[str] = None,
-    limit: int = Query(default=100, le=1000, description="Maximum results"),
-    offset: int = Query(default=0, description="Offset for pagination"),
+    limit: int = Query(default=100, ge=0, le=1000, description="Maximum results"),
+    offset: int = Query(default=0, ge=0, description="Offset for pagination"),
     db: Session = Depends(get_db),
 ):
     """List all systems with scan, package, and file counts."""

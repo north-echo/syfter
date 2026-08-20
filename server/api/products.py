@@ -19,8 +19,8 @@ router = APIRouter()
 @router.get("/", response_model=List[ProductResponse])
 def list_products(
     response: Response,
-    limit: int = Query(default=100, le=1000, description="Maximum results"),
-    offset: int = Query(default=0, description="Offset for pagination"),
+    limit: int = Query(default=100, ge=0, le=1000, description="Maximum results"),
+    offset: int = Query(default=0, ge=0, description="Offset for pagination"),
     name: Optional[str] = Query(default=None, description="Filter by product name (case-insensitive substring, or use % as wildcard)"),
     tag: Optional[str] = Query(default=None, description="Filter to products with scans matching this tag"),
     db: Session = Depends(get_db),

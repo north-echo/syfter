@@ -145,6 +145,69 @@ class TestImportPackages:
         assert resp.status_code == 400
         assert "name" in resp.json()["detail"]
 
+    def test_import_invalid_json_fails(self, api):
+        resp = api.post(
+            "/api/v1/scans/import-packages",
+            data={"product_name": "CID-000000", "product_version": "latest"},
+            files={"packages": ("p.json", b"{invalid json", "application/json")},
+        )
+        assert resp.status_code == 400
+        assert "JSON" in resp.json()["detail"]
+
+    def test_import_binary_file_fails(self, api):
+        resp = api.post(
+            "/api/v1/scans/import-packages",
+            data={"product_name": "CID-000000", "product_version": "latest"},
+            files={"packages": ("p.bin", b"\x00\x01\x02\x03\xff\xfe", "application/octet-stream")},
+        )
+        assert resp.status_code == 400
+
+    def test_import_csv_no_packages_fails(self, api):
+        resp = api.post(
+            "/api/v1/scans/import-packages",
+            data={"product_name": "CID-000000", "product_version": "latest"},
+            files={"packages": ("p.csv", b"name,version\n", "text/csv")},
+        )
+        assert resp.status_code == 400
+        assert "No packages" in resp.json()["detail"]
+
+    def test_sbom_import_empty_file_fails(self, api):
+        resp = api.post(
+            "/api/v1/scans/import",
+            data={"product_name": "CID-000000", "product_version": "latest"},
+            files={"sbom": ("sbom.json", b"", "application/json")},
+        )
+        assert resp.status_code == 400
+        assert "Empty" in resp.json()["detail"]
+
+    def test_sbom_import_invalid_json_fails(self, api):
+        resp = api.post(
+            "/api/v1/scans/import",
+            data={"product_name": "CID-000000", "product_version": "latest"},
+            files={"sbom": ("sbom.json", b"not json at all", "application/json")},
+        )
+        assert resp.status_code == 400
+        assert "JSON" in resp.json()["detail"]
+
+    def test_sbom_import_unknown_format_fails(self, api):
+        resp = api.post(
+            "/api/v1/scans/import",
+            data={"product_name": "CID-000000", "product_version": "latest"},
+            files={"sbom": ("sbom.json", json.dumps({"foo": "bar"}).encode(), "application/json")},
+        )
+        assert resp.status_code == 400
+        assert "format" in resp.json()["detail"].lower()
+
+    def test_sbom_import_empty_sbom_no_packages_fails(self, api):
+        sbom = {"spdxVersion": "SPDX-2.3", "packages": []}
+        resp = api.post(
+            "/api/v1/scans/import",
+            data={"product_name": "CID-000000", "product_version": "latest"},
+            files={"sbom": ("sbom.json", json.dumps(sbom).encode(), "application/json")},
+        )
+        assert resp.status_code == 400
+        assert "no packages" in resp.json()["detail"].lower()
+
 
 # ── Ecosystem (purl_type) filter ──────────────────────────────────────────
 
